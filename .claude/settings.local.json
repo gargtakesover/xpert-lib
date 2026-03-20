@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/opc/takeover/xpert -type f -name *.py -o -name *.toml -o -name *.md -o -name *.txt)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(xpert:*)"
+    ]
+  }
+}
