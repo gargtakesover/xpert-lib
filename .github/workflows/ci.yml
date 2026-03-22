@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run pytest
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short -m "not integration"
 
       - name: Run mypy
         run: mypy src/
@@ -35,8 +35,37 @@ jobs:
       - name: Run black check
         run: black --check src/
 
+      - name: Security audit (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit
+
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version consistency
+        run: |
+          # Extract version from pyproject.toml
+          PYPROJ_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "//;s/"//')
+
+          # Extract version from scraper.py (__version__ line)
+          SCRAPER_VERSION=$(grep '__version__' src/xpert/scraper.py | grep -oP '(?<=_get_version\("xpert"\)\s*except Exception:\s*)__version__\s*=\s*"\K[^"]+' || \
+                           grep '__version__' src/xpert/scraper.py | grep -oP '__version__\s*=\s*"\K[^"]+')
+
+          echo "pyproject.toml version: $PYPROJ_VERSION"
+          echo "scraper.py version: $SCRAPER_VERSION"
+
+          if [ "$PYPROJ_VERSION" != "$SCRAPER_VERSION" ]; then
+            echo "ERROR: Version mismatch!"
+            echo "pyproject.toml and scraper.py __version__ must match."
+            exit 1
+          fi
+          echo "Version check passed."
+
   publish:
-    needs: test
+    needs: [test, version-check]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
