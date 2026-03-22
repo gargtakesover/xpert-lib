@@ -104,6 +104,7 @@ class TestSetup:
 class TestStatus:
     def test_status_no_crash(self, runner, monkeypatch):
         monkeypatch.setattr("xpert_cli.cli.MODULES_OK", True)
+        monkeypatch.setattr("xpert_cli.cli.NITTER_INSTANCES", ["http://localhost:8080"], raising=False)
         monkeypatch.setattr("xpert_cli.cli.cookies_module", MagicMock(
             has_cookies=lambda: True,
             get_cookies_status=lambda: {"configured": True, "token_prefix": "abc", "ct0_prefix": "def"},
