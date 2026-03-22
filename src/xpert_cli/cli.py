@@ -49,6 +49,9 @@ except ImportError as e:
     ENGINE_DIR = None
     SESSIONS_FILE = None
     PACKAGE_DIR = None
+    NITTER_INSTANCES = []
+    MAX_QUERY_LENGTH = 500
+    LOG_FILE = Path("/dev/null")
     MODULES_OK = False
     MODULE_ERROR = str(e)
 
@@ -207,31 +210,34 @@ def _safe_output_path(path: str) -> Path:
 
 def output_result(data, fmt: str, output: Optional[str]):
     """Output data in requested format."""
-    if fmt == "json":
-        if isinstance(data, list):
-            out = json.dumps([_tweet_to_dict(t) for t in data], indent=2, ensure_ascii=False)
+    try:
+        if fmt == "json":
+            if isinstance(data, list):
+                out = json.dumps([_tweet_to_dict(t) for t in data], indent=2, ensure_ascii=False)
+            else:
+                out = json.dumps(_user_to_dict(data), indent=2, ensure_ascii=False)
+            if output:
+                safe_path = _safe_output_path(output)
+                with open(safe_path, "w", encoding="utf-8") as f:
+                    f.write(out)
+                click.echo(ok(f"Saved to {safe_path}"))
+            else:
+                click.echo(out)
         else:
-            out = json.dumps(_user_to_dict(data), indent=2, ensure_ascii=False)
-        if output:
+            if not output:
+                output = click.prompt("Output file path", type=str)
             safe_path = _safe_output_path(output)
-            with open(safe_path, "w", encoding="utf-8") as f:
-                f.write(out)
+            if isinstance(data, list):
+                tweets_to_format(data, fmt, str(safe_path))
+            else:
+                # User profiles can't be exported as CSV/Excel — suggest JSON
+                raise click.BadParameter(
+                    f"--format {fmt} is not supported for user profiles. "
+                    "Use --format json to export profile data."
+                )
             click.echo(ok(f"Saved to {safe_path}"))
-        else:
-            click.echo(out)
-    else:
-        if not output:
-            output = click.prompt("Output file path", type=str)
-        safe_path = _safe_output_path(output)
-        if isinstance(data, list):
-            tweets_to_format(data, fmt, str(safe_path))
-        else:
-            # User profiles can't be exported as CSV/Excel — suggest JSON
-            raise click.BadParameter(
-                f"--format {fmt} is not supported for user profiles. "
-                "Use --format json to export profile data."
-            )
-        click.echo(ok(f"Saved to {safe_path}"))
+    except ValueError as e:
+        raise click.ClickException(f"Failed to export data: {e}")
 
 
 def _tweet_to_dict(t: Tweet) -> dict:
