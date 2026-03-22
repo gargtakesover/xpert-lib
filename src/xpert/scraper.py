@@ -237,6 +237,7 @@ def fetch_page(client: httpx.Client, path: str, retry_count: int = 3) -> Optiona
                 if "<title>Error |" in r.text or "error-panel" in r.text:
                     if "rate limit" in r.text.lower() or "429" in r.text:
                         record_429()
+                        raise RateLimitError("Nitter is rate limited. Please wait before retrying.")
                     nitter_circuit.record_failure()
                     break
 

@@ -382,6 +382,25 @@ def install(cores: bool, force: bool):
         click.echo(err(f"Error checking Docker: {e}"))
         sys.exit(1)
 
+    # Check Docker daemon health (storage driver, etc.)
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.Driver}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            click.echo(err("Docker daemon is not responding."))
+            click.echo(f"  {err(result.stderr.strip() or 'Run: sudo systemctl start docker')}")
+            sys.exit(1)
+        driver = result.stdout.strip()
+        click.echo(f"{ok('●')} Storage driver: {driver}")
+        if driver == "overlay2":
+            click.echo(warn("  Note: overlay2 is recommended. Some environments with overlayfs may have issues."))
+    except FileNotFoundError:
+        pass  # docker exists, this shouldn't fail
+
     # Check if docker-compose is available
     try:
         result = subprocess.run(
