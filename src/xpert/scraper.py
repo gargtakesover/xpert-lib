@@ -17,11 +17,14 @@ from urllib.parse import unquote
 import httpx
 from bs4 import BeautifulSoup
 
-from xpert.config import NITTER_INSTANCES, UA, REQUEST_TIMEOUT
-from xpert.cookies import load_cookies
+from xpert.config import NITTER_INSTANCES, UA, REQUEST_TIMEOUT, DEFAULT_LIMIT
 from xpert.circuit_breaker import nitter_circuit
 
-__version__ = "1.0.0"
+try:
+    from importlib.metadata import version as _get_version
+    __version__ = _get_version("xpert")
+except Exception:
+    __version__ = "1.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +97,12 @@ class NotFoundError(XpertError):
 # ---------------------------------------------------------------------------
 
 def _build_client() -> httpx.Client:
-    """Build HTTP client with optional auth cookies."""
-    cookies = load_cookies()
+    """Build HTTP client for Nitter.
+
+    Note: Nitter handles Twitter authentication internally via sessions.jsonl.
+    No auth headers needed from Python client.
+    """
     headers = {"User-Agent": UA}
-    if cookies.get("auth_token"):
-        headers["x-auth-token"] = cookies["auth_token"]
-        headers["x-csrf-token"] = cookies.get("ct0", "")
     return httpx.Client(headers=headers, timeout=REQUEST_TIMEOUT, follow_redirects=True)
 
 
@@ -206,22 +209,40 @@ def get_download_url(media_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 def fetch_page(client: httpx.Client, path: str, retry_count: int = 3) -> Optional[str]:
-    """Fetch from Nitter with circuit breaker and multi-instance fallback."""
+    """Fetch from Nitter with circuit breaker, rate limiting, and multi-instance fallback."""
     if not nitter_circuit.can_execute():
         return None
+
+    # Wait if we're in rate limit backoff or have too many requests in flight
+    from xpert.rate_limiter import rate_limit_and_wait, record_request, record_429, record_success
+    rate_limit_and_wait()
 
     for instance in NITTER_INSTANCES:
         for attempt in range(retry_count):
             try:
                 r = client.get(f"{instance}{path}", timeout=REQUEST_TIMEOUT)
+                record_request()
+
+                if r.status_code == 429:
+                    record_429()
+                    nitter_circuit.record_failure()
+                    # Don't break — try next instance
+                    break
+
                 if r.status_code != 200:
                     nitter_circuit.record_failure()
                     break
+
+                # Check for Nitter-internal rate limit or error page
                 if "<title>Error |" in r.text or "error-panel" in r.text:
+                    if "rate limit" in r.text.lower() or "429" in r.text:
+                        record_429()
                     nitter_circuit.record_failure()
                     break
+
                 if any(x in r.text for x in ["tweet-content", "timeline-item", "profile-result"]):
                     nitter_circuit.record_success()
+                    record_success()
                     return r.text
                 break
             except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout) as e:
@@ -625,12 +646,13 @@ def get_user(username: str) -> User:
     )
 
 
-def get_timeline(username: str, limit: int = 20) -> List[Tweet]:
+def get_timeline(username: str, limit: int = DEFAULT_LIMIT) -> List[Tweet]:
     """Get a user's recent tweets."""
     _raise_nitter_unreachable()
     username = username.lstrip("@")
 
     all_tweets = []
+    seen_ids = set()  # Cross-page dedup
     cursor = ""
     with _build_client() as client:
         while len(all_tweets) < limit:
@@ -643,7 +665,12 @@ def get_timeline(username: str, limit: int = 20) -> List[Tweet]:
             parsed = _parse_page(html)
             if not parsed:
                 break
-            all_tweets.extend(parsed)
+            # Cross-page dedup by tweet ID
+            for tweet_dict in parsed:
+                tweet_id = tweet_dict.get("id", "")
+                if tweet_id and tweet_id not in seen_ids:
+                    seen_ids.add(tweet_id)
+                    all_tweets.append(tweet_dict)
             soup = BeautifulSoup(html, "lxml")
             more = soup.select_one(".show-more a")
             if more and more.get("href"):
@@ -656,17 +683,101 @@ def get_timeline(username: str, limit: int = 20) -> List[Tweet]:
     return [_dict_to_tweet(t) for t in all_tweets[:limit]]
 
 
-def search(query: str, limit: int = 20, min_faves: int = None, since: str = None) -> List[Tweet]:
-    """Search tweets by query."""
+def search(
+    query: str,
+    limit: int = DEFAULT_LIMIT,
+    min_faves: int = None,
+    since: str = None,
+    until: str = None,
+    min_retweets: int = None,
+    min_replies: int = None,
+    near: str = None,
+    verified_only: bool = False,
+    has_engagement: bool = False,
+    min_engagement: int = None,
+    time_within: str = None,
+    filters: str = None,
+    excludes: str = None,
+    query_type: str = "live",
+) -> List[Tweet]:
+    """Search tweets by query with full filter support.
+
+    Args:
+        query: Search query string
+        limit: Maximum results to return
+        min_faves: Minimum likes filter
+        since: Filter tweets since (YYYY-MM-DD)
+        until: Filter tweets until (YYYY-MM-DD)
+        min_retweets: Minimum retweets filter
+        min_replies: Minimum replies filter
+        near: Geo filter (city,country)
+        verified_only: Only show verified users
+        has_engagement: Exclude zero-engagement tweets
+        min_engagement: Minimum in ALL stats (likes+retweets+replies)
+        time_within: Relative time (25m, 6h, 7d)
+        filters: Include only (media, images, videos, links)
+        excludes: Exclude (media, videos)
+        query_type: Sort by (live, top, latest)
+    """
     _raise_nitter_unreachable()
     from urllib.parse import quote_plus
 
-    encoded = quote_plus(query)
+    # Build query with Nitter-native filters
+    full_query = query
+
+    # Add time filter
+    if time_within:
+        time_map = {"25m": "25m", "6h": "6h", "7d": "7d", "24h": "24h"}
+        if time_within in time_map:
+            full_query += f" since:{time_map[time_within]}"
+
+    # Add geo filter
+    if near:
+        full_query += f" near:{near}"
+
+    # Add include filters
+    if filters:
+        for f in filters.split(","):
+            f = f.strip()
+            if f == "media":
+                full_query += " filter:media"
+            elif f == "images":
+                full_query += " filter:images"
+            elif f == "videos":
+                full_query += " filter:videos"
+            elif f == "links":
+                full_query += " filter:links"
+
+    # Add exclude filters
+    if excludes:
+        for e in excludes.split(","):
+            e = e.strip()
+            if e == "media":
+                full_query += " -filter:media"
+            elif e == "videos":
+                full_query += " -filter:videos"
+
+    # Add verified filter
+    if verified_only:
+        full_query += " filter:verified"
+
+    encoded = quote_plus(full_query)
+
+    # Determine search feed type
+    feed_type = "tweets"
+    if query_type == "top":
+        feed_type = "top"
+    elif query_type == "latest":
+        feed_type = "latest"
+    elif query_type == "people":
+        feed_type = "people"
+
     all_tweets = []
+    seen_ids = set()  # Cross-page dedup
     cursor = ""
     with _build_client() as client:
         while len(all_tweets) < limit:
-            path = f"/search?f=tweets&q={encoded}"
+            path = f"/search?f={feed_type}&q={encoded}"
             if cursor:
                 path += f"&cursor={cursor}"
             html = fetch_page(client, path)
@@ -675,7 +786,12 @@ def search(query: str, limit: int = 20, min_faves: int = None, since: str = None
             parsed = _parse_page(html)
             if not parsed:
                 break
-            all_tweets.extend(parsed)
+            # Cross-page dedup by tweet ID
+            for tweet_dict in parsed:
+                tweet_id = tweet_dict.get("id", "")
+                if tweet_id and tweet_id not in seen_ids:
+                    seen_ids.add(tweet_id)
+                    all_tweets.append(tweet_dict)
             soup = BeautifulSoup(html, "lxml")
             more = soup.select_one(".show-more a")
             if more and more.get("href"):
@@ -687,9 +803,15 @@ def search(query: str, limit: int = 20, min_faves: int = None, since: str = None
 
     tweets = [_dict_to_tweet(t) for t in all_tweets[:limit]]
 
-    # Client-side filtering
+    # Client-side filtering (for filters Nitter doesn't support natively)
     if min_faves is not None:
         tweets = [t for t in tweets if t.likes >= min_faves]
+
+    if min_retweets is not None:
+        tweets = [t for t in tweets if t.retweets >= min_retweets]
+
+    if min_replies is not None:
+        tweets = [t for t in tweets if t.replies >= min_replies]
 
     if since:
         from datetime import datetime
@@ -699,7 +821,105 @@ def search(query: str, limit: int = 20, min_faves: int = None, since: str = None
         except ValueError:
             pass
 
+    if until:
+        from datetime import datetime
+        try:
+            until_dt = datetime.fromisoformat(until)
+            tweets = [t for t in tweets if t.created_at <= until_dt.isoformat()]
+        except ValueError:
+            pass
+
+    if has_engagement:
+        tweets = [t for t in tweets if t.likes > 0 or t.retweets > 0 or t.replies > 0]
+
+    if min_engagement is not None:
+        tweets = [
+            t for t in tweets
+            if (t.likes or 0) + (t.retweets or 0) + (t.replies or 0) >= min_engagement
+        ]
+
     return tweets
+
+
+def search_users(query: str, limit: int = DEFAULT_LIMIT) -> List[User]:
+    """Search for users by query."""
+    _raise_nitter_unreachable()
+    from urllib.parse import quote_plus
+
+    encoded = quote_plus(query)
+    all_users = []
+    cursor = ""
+    with _build_client() as client:
+        while len(all_users) < limit:
+            path = f"/search?f=people&q={encoded}"
+            if cursor:
+                path += f"&cursor={cursor}"
+            html = fetch_page(client, path)
+            if not html:
+                break
+
+            soup = BeautifulSoup(html, "lxml")
+            # Parse user profile cards
+            for card in soup.select(".profile-card"):
+                user_data = _parse_profile_card(card)
+                if user_data:
+                    all_users.append(user_data)
+
+            # Check for more results
+            more = soup.select_one(".show-more a")
+            if more and more.get("href"):
+                m = re.search(r"cursor=([^&]+)", more["href"])
+                cursor = m.group(1) if m else ""
+            else:
+                break
+            time.sleep(0.5)
+
+    return [_dict_to_user(u) for u in all_users[:limit]]
+
+
+def _parse_profile_card(card) -> dict:
+    """Parse a user profile card from search results."""
+    username_el = card.select_one(".profile-card-username")
+    if not username_el:
+        return None
+    username = username_el.get_text(strip=True).lstrip("@")
+
+    fullname_el = card.select_one(".profile-card-fullname")
+    display_name = fullname_el.get_text(strip=True) if fullname_el else username
+
+    bio_el = card.select_one(".profile-bio")
+    bio = bio_el.get_text("\n", strip=True) if bio_el else ""
+
+    # Avatar
+    avatar_el = card.select_one(".avatar")
+    profile_picture = ""
+    if avatar_el:
+        src = avatar_el.get("src", "")
+        if src:
+            profile_picture = nitter_to_twitter_url(src) if "/pic/" in src else src
+
+    # Stats
+    stats = {"followers": 0, "following": 0, "tweets": 0}
+    stat_els = card.select(".profile-stat-num")
+    stat_headers = card.select(".profile-stat-header")
+    for header, val_el in zip(stat_headers, stat_els):
+        label = header.get_text(strip=True).lower()
+        val = parse_count(val_el.get_text(strip=True)) or 0
+        if label in stats:
+            stats[label] = val
+
+    verified = card.select_one(".verified-icon") is not None
+
+    return {
+        "username": username,
+        "display_name": display_name,
+        "bio": bio,
+        "stats": stats,
+        "profile_picture": profile_picture,
+        "banner": "",
+        "joined": "",
+        "verified": verified,
+    }
 
 
 def get_tweet(url: str) -> Tweet:
@@ -749,17 +969,14 @@ def get_thread(url: str) -> List[Tweet]:
 class Xpert:
     """Main client for accessing Twitter/X data."""
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key
-
     def get_user(self, username: str) -> User:
         """Get user profile."""
         return get_user(username)
 
-    def get_timeline(self, username: str, limit: int = 20) -> List[Tweet]:
+    def get_timeline(self, username: str, limit: int = DEFAULT_LIMIT) -> List[Tweet]:
         """Get user timeline."""
         return get_timeline(username, limit)
 
-    def search(self, query: str, limit: int = 20) -> List[Tweet]:
+    def search(self, query: str, limit: int = DEFAULT_LIMIT) -> List[Tweet]:
         """Search tweets."""
         return search(query, limit)

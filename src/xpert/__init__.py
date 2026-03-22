@@ -12,6 +12,8 @@ from xpert.scraper import (
     search,
     get_tweet,
     get_thread,
+    search_users,
+    __version__,
 )
 
 __all__ = [
@@ -26,4 +28,6 @@ __all__ = [
     "search",
     "get_tweet",
     "get_thread",
+    "search_users",
+    "__version__",
 ]

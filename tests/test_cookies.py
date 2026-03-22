@@ -1,4 +1,4 @@
-"""Tests for cookie management."""
+"""Tests for cookie/session management."""
 
 import pytest
 import tempfile
@@ -34,12 +34,12 @@ class TestValidateCookies:
 
 class TestSaveLoadCookies:
     def test_save_and_load(self, tmp_path):
-        cookie_file = tmp_path / "cookies.json"
+        sessions_file = tmp_path / "sessions.jsonl"
 
-        # Monkey-patch COOKIE_FILE temporarily
+        # Monkey-patch SESSIONS_FILE temporarily
         import xpert.cookies as c
-        old = c.COOKIE_FILE
-        c.COOKIE_FILE = cookie_file
+        old = c.SESSIONS_FILE
+        c.SESSIONS_FILE = sessions_file
 
         try:
             save_cookies("abc123" * 8, "def456" * 8)
@@ -47,46 +47,46 @@ class TestSaveLoadCookies:
             assert data["auth_token"] == "abc123" * 8
             assert data["ct0"] == "def456" * 8
         finally:
-            c.COOKIE_FILE = old
+            c.SESSIONS_FILE = old
 
     def test_load_nonexistent(self, tmp_path):
         import xpert.cookies as c
-        old = c.COOKIE_FILE
-        c.COOKIE_FILE = tmp_path / "nonexistent.json"
+        old = c.SESSIONS_FILE
+        c.SESSIONS_FILE = tmp_path / "nonexistent.jsonl"
         try:
             assert load_cookies() == {}
         finally:
-            c.COOKIE_FILE = old
+            c.SESSIONS_FILE = old
 
     def test_has_cookies(self, tmp_path):
         import xpert.cookies as c
-        old = c.COOKIE_FILE
-        c.COOKIE_FILE = tmp_path / "cookies.json"
+        old = c.SESSIONS_FILE
+        c.SESSIONS_FILE = tmp_path / "sessions.jsonl"
         try:
             assert has_cookies() is False
             save_cookies("a" * 40, "b" * 40)
             assert has_cookies() is True
         finally:
-            c.COOKIE_FILE = old
+            c.SESSIONS_FILE = old
 
     def test_clear_cookies(self, tmp_path):
         import xpert.cookies as c
-        old = c.COOKIE_FILE
-        c.COOKIE_FILE = tmp_path / "cookies.json"
+        old = c.SESSIONS_FILE
+        c.SESSIONS_FILE = tmp_path / "sessions.jsonl"
         try:
             save_cookies("a" * 40, "b" * 40)
             assert has_cookies() is True
             clear_cookies()
             assert has_cookies() is False
         finally:
-            c.COOKIE_FILE = old
+            c.SESSIONS_FILE = old
 
     def test_save_invalid_raises(self, tmp_path):
         import xpert.cookies as c
-        old = c.COOKIE_FILE
-        c.COOKIE_FILE = tmp_path / "cookies.json"
+        old = c.SESSIONS_FILE
+        c.SESSIONS_FILE = tmp_path / "sessions.jsonl"
         try:
             with pytest.raises(CookieError):
                 save_cookies("short", "ct0value12345678901234567890")
         finally:
-            c.COOKIE_FILE = old
+            c.SESSIONS_FILE = old

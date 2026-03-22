@@ -77,3 +77,10 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Twitter auth tokens — NEVER commit these
+sessions.jsonl
+engine/sessions.jsonl
+
+# xpert.egg-info from pip install -e
+src/xpert.egg-info/
