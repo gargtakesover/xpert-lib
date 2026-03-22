@@ -444,12 +444,18 @@ def install(cores: bool, force: bool):
                 click.echo(err(f"Failed to install engine: {e}"))
                 sys.exit(1)
 
-    # Generate random HMAC key if still using placeholder
+    # Generate random HMAC key if still using placeholder or empty
     nitter_conf = engine_dir / "nitter.conf"
     if nitter_conf.exists():
         import re
         conf_content = nitter_conf.read_text()
-        if "xpert-secret-key-change-in-production" in conf_content:
+        placeholder = "xpert-secret-key-change-in-production"
+        # Check for placeholder or empty key using regex for robustness
+        needs_key = (
+            placeholder in conf_content or
+            re.search(r'hmacKey\s*=\s*""', conf_content)
+        )
+        if needs_key:
             import secrets
             new_key = secrets.token_hex(32)
             conf_content = re.sub(
