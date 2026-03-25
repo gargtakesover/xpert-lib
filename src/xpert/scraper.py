@@ -445,6 +445,9 @@ def _parse_tweet(body) -> dict:
         has_community_note = True
         community_note = cn_el.get_text(strip=True)
 
+    # Edited status
+    is_edited = body.select_one(".icon-pencil, .tweet-header-items [title*='Edited']") is not None
+
     return {
         "id": tweet_id,
         "url": f"https://x.com/{username}/status/{tweet_id}" if username and tweet_id else None,
@@ -473,6 +476,7 @@ def _parse_tweet(body) -> dict:
         "link_card": link_card,
         "community_note": community_note,
         "has_community_note": has_community_note,
+        "is_edited": is_edited,
     }
 
 
@@ -564,6 +568,9 @@ def _dict_to_tweet(d: dict) -> Tweet:
         gifs=d.get("gifs", []),
         quote_tweet=d.get("quote_tweet", {}),
         link_card=d.get("link_card", {}),
+        community_note=d.get("community_note", ""),
+        has_community_note=d.get("has_community_note", False),
+        is_edited=d.get("is_edited", False),
     )
 
 
