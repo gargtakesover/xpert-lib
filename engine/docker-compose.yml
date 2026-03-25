@@ -1,0 +1,45 @@
+services:
+  nitter:
+    image: zedeus/nitter:latest
+    container_name: xpert-nitter
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./nitter.conf:/src/nitter.conf:Z,ro
+      - ./sessions.jsonl:/src/sessions.jsonl:Z,ro
+    depends_on:
+      - nitter-redis
+    restart: unless-stopped
+    healthcheck:
+      test: wget -nv --tries=1 --spider http://127.0.0.1:8080/ || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 2
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 64
+
+  nitter-redis:
+    image: redis:6-alpine
+    container_name: xpert-redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - nitter-redis:/data
+    restart: unless-stopped
+    healthcheck:
+      test: redis-cli ping
+      interval: 30s
+      timeout: 5s
+      retries: 2
+    read_only: true
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 32
+
+volumes:
+  nitter-redis:
