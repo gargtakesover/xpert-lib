@@ -571,6 +571,9 @@ def _dict_to_tweet(d: dict) -> Tweet:
         community_note=d.get("community_note", ""),
         has_community_note=d.get("has_community_note", False),
         is_edited=d.get("is_edited", False),
+        is_ai_generated=d.get("is_ai_generated", False),
+        is_promoted=d.get("is_promoted", False),
+        grok_share=d.get("grok_share", ""),
     )
 
 

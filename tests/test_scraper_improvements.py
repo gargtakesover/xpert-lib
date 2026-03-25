@@ -87,6 +87,6 @@ def test_parse_tweet_without_improvements():
     result = _parse_tweet(body)
     
     assert result["has_community_note"] is False
-    assert result["community_note"] == {}
+    assert result["community_note"] == ""
     assert result["is_edited"] is False
     assert result["images"] == []
