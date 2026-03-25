@@ -10,10 +10,10 @@ REAL_WORLD_EVERYTHING_TWEET = """
         <div class="tweet-header">
             <a class="username" title="Elon Musk">@elonmusk</a>
             <span class="fullname">Elon Musk</span>
-            <span class="tweet-header-items">
-                <span class="icon-pencil" title="Edited at 9:42 PM · Mar 24, 2026"></span>
-            </span>
         </div>
+        <p class="tweet-published">
+            <a href="/elonmusk/status/123/history">Last edited 9:42 PM · Mar 24, 2026</a>
+        </p>
         <div class="tweet-content media-body" dir="auto">The future is looking bright! 🚀</div>
         <div class="attachments">
             <div class="gallery-row">

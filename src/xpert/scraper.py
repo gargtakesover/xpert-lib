@@ -445,8 +445,20 @@ def _parse_tweet(body) -> dict:
         has_community_note = True
         community_note = cn_el.get_text(strip=True)
 
-    # Edited status
-    is_edited = body.select_one(".icon-pencil, .tweet-header-items [title*='Edited']") is not None
+    # Edited status — Nitter renders "Last edited" as <a href=".../history"> inside <p class="tweet-published">
+    is_edited = body.select_one(".tweet-published a[href*='/history']") is not None
+
+    # Grok share — rendered as .card.large with "Answer by Grok" in the destination text
+    grok_share = ""
+    card_el = body.select_one(".card")
+    if card_el:
+        card_dest = card_el.select_one(".card-destination")
+        if card_dest and "Answer by Grok" in card_dest.get_text():
+            title_el = card_el.select_one(".card-title")
+            grok_share = title_el.get_text(strip=True) if title_el else ""
+
+    # AI-generated — Grok-shared tweets show an attribution link (e.g. shared via @grok)
+    is_ai_generated = body.select_one(".attribution") is not None
 
     return {
         "id": tweet_id,
@@ -477,6 +489,9 @@ def _parse_tweet(body) -> dict:
         "community_note": community_note,
         "has_community_note": has_community_note,
         "is_edited": is_edited,
+        "is_ai_generated": is_ai_generated,
+        "is_promoted": False,  # Nitter filters promoted tweets — never rendered
+        "grok_share": grok_share,
     }
 
 
