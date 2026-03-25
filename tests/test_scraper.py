@@ -73,7 +73,7 @@ class TestTweetDataclass:
         t = Tweet(
             id="456", text="Hello with image", author="user",
             created_at="2026-01-01T00:00:00Z", url="https://x.com/user/status/456",
-            content_type="image", images=["https://pbs.twimg.com/img.jpg"]
+            content_type="image", images=[{"url": "https://pbs.twimg.com/img.jpg", "alt": ""}]
         )
         assert t.content_type == "image"
         assert len(t.images) == 1
