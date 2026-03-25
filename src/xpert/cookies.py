@@ -100,7 +100,7 @@ def save_cookies(token: str, ct0: str, username: str = "", account_id: str = "")
     os.chmod(SESSIONS_FILE, 0o600)
 
 
-def load_cookies(account_id: str = None) -> dict:
+def load_cookies(account_id: Optional[str] = None) -> dict:
     """Load cookies from sessions.jsonl.
 
     Args:
@@ -138,7 +138,7 @@ def get_all_accounts() -> List[dict]:
     return accounts
 
 
-def clear_cookies(account_id: str = None) -> None:
+def clear_cookies(account_id: Optional[str] = None) -> None:
     """Remove stored sessions.
 
     Args:
