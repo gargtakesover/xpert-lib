@@ -54,11 +54,17 @@ class Tweet:
     thread_length: int = 0
     reply_to_user: str = ""
     retweeted_by: str = ""
-    images: List[str] = field(default_factory=list)
+    images: List[dict] = field(default_factory=list)
     videos: List[dict] = field(default_factory=list)
     gifs: List[str] = field(default_factory=list)
     quote_tweet: dict = field(default_factory=dict)
     link_card: dict = field(default_factory=dict)
+    community_note: str = ""
+    has_community_note: bool = False
+    is_ai_generated: bool = False
+    is_promoted: bool = False
+    is_edited: bool = False
+    grok_share: str = ""
 
 
 @dataclass
@@ -337,9 +343,10 @@ def _parse_tweet(body) -> dict:
         img = a.select_one("img")
         if img:
             src = img.get("src", "")
+            alt = img.get("alt", "")
             if src:
                 twitter_url = nitter_to_twitter_url(src) if "/pic/" in src else src
-                images.append(twitter_url)
+                images.append({"url": twitter_url, "alt": alt})
 
     videos = []
     for v in body.select("video, video source"):
@@ -430,6 +437,14 @@ def _parse_tweet(body) -> dict:
             "image_url": card_img_url,
         }
 
+    # Community Note
+    community_note = ""
+    has_community_note = False
+    cn_el = body.select_one(".community-note")
+    if cn_el:
+        has_community_note = True
+        community_note = cn_el.get_text(strip=True)
+
     return {
         "id": tweet_id,
         "url": f"https://x.com/{username}/status/{tweet_id}" if username and tweet_id else None,
@@ -456,6 +471,8 @@ def _parse_tweet(body) -> dict:
         "gifs": gifs,
         "quote_tweet": quote_tweet,
         "link_card": link_card,
+        "community_note": community_note,
+        "has_community_note": has_community_note,
     }
 
 
