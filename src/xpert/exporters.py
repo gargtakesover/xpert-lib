@@ -104,7 +104,7 @@ def tweets_to_markdown(tweets: List, output: Optional[str] = None) -> str:
 def tweets_to_excel(tweets: List, output: Optional[str] = None) -> Union[bytes, str]:
     """Export tweets to Excel (.xlsx)."""
     try:
-        import pandas as pd
+        import pandas as pd  # type: ignore
     except ImportError:
         raise ImportError("pandas and openpyxl required for Excel export. Install with: pip install xpert[excel]")
 
@@ -114,7 +114,7 @@ def tweets_to_excel(tweets: List, output: Optional[str] = None) -> Union[bytes, 
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Tweets")
         ws = writer.sheets["Tweets"]
-        from openpyxl.styles import Font, PatternFill
+        from openpyxl.styles import Font, PatternFill  # type: ignore
         header_font = Font(bold=True, color="FFFFFF", size=11)
         header_fill = PatternFill(start_color="1DA1F2", end_color="1DA1F2", fill_type="solid")
         for col_idx in range(1, len(TWEET_COLUMNS) + 1):
@@ -132,7 +132,7 @@ def tweets_to_excel(tweets: List, output: Optional[str] = None) -> Union[bytes, 
     return data
 
 
-def tweets_to_format(tweets: List, fmt: str, output: str) -> str:
+def tweets_to_format(tweets: List, fmt: str, output: str) -> Union[bytes, str]:
     """Export tweets in specified format. Writes to output file."""
     fmt = fmt.lower()
     if fmt == "csv":

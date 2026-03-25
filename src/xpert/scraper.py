@@ -11,11 +11,11 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Any
 from urllib.parse import unquote
 
-import httpx
-from bs4 import BeautifulSoup
+import httpx  # type: ignore
+from bs4 import BeautifulSoup  # type: ignore
 
 from xpert.config import NITTER_INSTANCES, UA, REQUEST_TIMEOUT, DEFAULT_LIMIT
 from xpert.circuit_breaker import nitter_circuit
@@ -110,7 +110,7 @@ def _build_client() -> httpx.Client:
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def check_nitter_health(base_url: str = None) -> tuple[bool, str]:
+def check_nitter_health(base_url: Optional[str] = None) -> tuple[bool, str]:
     """Check if a Nitter instance is reachable."""
     base_url = base_url or NITTER_INSTANCES[0]
     try:
@@ -128,7 +128,7 @@ def check_nitter_health(base_url: str = None) -> tuple[bool, str]:
         return False, f"HTTP error: {e}"
 
 
-def _raise_nitter_unreachable(base_url: str = None):
+def _raise_nitter_unreachable(base_url: Optional[str] = None) -> None:
     """Raise ConnectionError with troubleshooting steps if Nitter is down."""
     base_url = base_url or NITTER_INSTANCES[0]
     ok, error_msg = check_nitter_health(base_url)
@@ -194,7 +194,8 @@ def nitter_to_twitter_url(nitter_src: str) -> Optional[str]:
         return nitter_src
     path = nitter_src.split("/pic/")[1]
     decoded = unquote(path).split("?")[0]
-    return f"https://pbs.twimg.com/{decoded}"
+    res = f"https://pbs.twimg.com/{decoded}"
+    return res
 
 
 def get_download_url(media_url: str) -> str:
@@ -244,7 +245,8 @@ def fetch_page(client: httpx.Client, path: str, retry_count: int = 3) -> Optiona
                 if any(x in r.text for x in ["tweet-content", "timeline-item", "profile-result"]):
                     nitter_circuit.record_success()
                     record_success()
-                    return r.text
+                    res_text: str = r.text
+                    return res_text
                 break
             except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout) as e:
                 nitter_circuit.record_failure()
@@ -260,21 +262,22 @@ def fetch_page(client: httpx.Client, path: str, retry_count: int = 3) -> Optiona
 # Tweet parsing
 # ---------------------------------------------------------------------------
 
-def _parse_tweet(body) -> dict:
+def _parse_tweet(body) -> dict[str, Any]:
     """Parse a tweet-body HTML element into a Tweet dataclass."""
     now = datetime.now(timezone.utc).isoformat()
 
     # Author
     username_el = body.select_one(".username")
-    username = username_el.get_text(strip=True).lstrip("@") if username_el else ""
+    username: str = username_el.get_text(strip=True).lstrip("@") if username_el else ""
     display_el = body.select_one(".fullname")
     display_name = display_el.get_text(strip=True) if display_el else username
     avatar_el = body.select_one(".avatar")
-    profile_picture = ""
+    profile_picture: str = ""
     if avatar_el:
         src = avatar_el.get("src", "")
         if src:
-            profile_picture = nitter_to_twitter_url(src) if "/pic/" in src else src
+            res_pic = nitter_to_twitter_url(src) if "/pic/" in src else src
+            profile_picture = res_pic or ""
 
     # Content
     content_el = body.select_one(".tweet-content")
@@ -282,7 +285,7 @@ def _parse_tweet(body) -> dict:
 
     # Timestamp
     date_link = body.select_one(".tweet-date a")
-    exact_timestamp = parse_exact_timestamp(date_link)
+    exact_timestamp: Optional[str] = parse_exact_timestamp(date_link)
     relative_time = date_link.get_text(strip=True) if date_link else None
     tweet_id = ""
     if date_link:
@@ -608,7 +611,7 @@ def get_user(username: str) -> User:
                 banner = src
 
     # Stats
-    stats = {"tweets": 0, "following": 0, "followers": 0, "likes": 0}
+    stats: dict[str, int] = {"tweets": 0, "following": 0, "followers": 0, "likes": 0}
     stat_els = soup.select(".profile-stat-num")
     stat_headers = soup.select(".profile-stat-header")
 
@@ -652,7 +655,7 @@ def get_timeline(username: str, limit: int = DEFAULT_LIMIT) -> List[Tweet]:
     _raise_nitter_unreachable()
     username = username.lstrip("@")
 
-    all_tweets = []
+    all_tweets: List[dict] = []
     seen_ids = set()  # Cross-page dedup
     cursor = ""
     with _build_client() as client:
@@ -687,18 +690,18 @@ def get_timeline(username: str, limit: int = DEFAULT_LIMIT) -> List[Tweet]:
 def search(
     query: str,
     limit: int = DEFAULT_LIMIT,
-    min_faves: int = None,
-    since: str = None,
-    until: str = None,
-    min_retweets: int = None,
-    min_replies: int = None,
-    near: str = None,
+    min_faves: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    min_retweets: Optional[int] = None,
+    min_replies: Optional[int] = None,
+    near: Optional[str] = None,
     verified_only: bool = False,
     has_engagement: bool = False,
-    min_engagement: int = None,
-    time_within: str = None,
-    filters: str = None,
-    excludes: str = None,
+    min_engagement: Optional[int] = None,
+    time_within: Optional[str] = None,
+    filters: Optional[str] = None,
+    excludes: Optional[str] = None,
     query_type: str = "live",
 ) -> List[Tweet]:
     """Search tweets by query with full filter support.
@@ -773,7 +776,7 @@ def search(
     elif query_type == "people":
         feed_type = "people"
 
-    all_tweets = []
+    all_tweets: List[dict] = []
     seen_ids = set()  # Cross-page dedup
     cursor = ""
     with _build_client() as client:
@@ -848,7 +851,7 @@ def search_users(query: str, limit: int = DEFAULT_LIMIT) -> List[User]:
     from urllib.parse import quote_plus
 
     encoded = quote_plus(query)
-    all_users = []
+    all_users: List[dict] = []
     cursor = ""
     with _build_client() as client:
         while len(all_users) < limit:
@@ -878,7 +881,7 @@ def search_users(query: str, limit: int = DEFAULT_LIMIT) -> List[User]:
     return [_dict_to_user(u) for u in all_users[:limit]]
 
 
-def _parse_profile_card(card) -> dict:
+def _parse_profile_card(card) -> Optional[dict]:
     """Parse a user profile card from search results."""
     username_el = card.select_one(".profile-card-username")
     if not username_el:
@@ -897,7 +900,8 @@ def _parse_profile_card(card) -> dict:
     if avatar_el:
         src = avatar_el.get("src", "")
         if src:
-            profile_picture = nitter_to_twitter_url(src) if "/pic/" in src else src
+            res = nitter_to_twitter_url(src) if "/pic/" in src else src
+            profile_picture = res or ""
 
     # Stats
     stats = {"followers": 0, "following": 0, "tweets": 0}

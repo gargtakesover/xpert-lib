@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import click
+import click  # type: ignore
 
 try:
     from importlib.metadata import version as _get_pkg_version
@@ -35,20 +35,22 @@ try:
     from xpert import Xpert, Tweet, User, XpertError, RateLimitError, NotFoundError
     from xpert import get_user, get_timeline, search as xpert_search, get_tweet, get_thread
     from xpert import search_users as xpert_search_users
+    from xpert.scraper import search as _scraper_search
+    from xpert.scraper import search_users as _scraper_search_users
     from xpert import cookies as cookies_module
     from xpert.config import NITTER_INSTANCES, ENGINE_DIR, SESSIONS_FILE, PACKAGE_DIR, MAX_QUERY_LENGTH, LOG_FILE
     from xpert.scraper import check_nitter_health
     from xpert.exporters import tweets_to_format, tweets_to_csv, tweets_to_json
     MODULES_OK = True
 except ImportError as e:
-    Xpert = Tweet = User = None
-    XpertError = RateLimitError = NotFoundError = Exception
-    get_user = get_timeline = search = get_tweet = get_thread = search_users = None
-    cookies_module = None
-    check_nitter_health = None
-    ENGINE_DIR = None
-    SESSIONS_FILE = None
-    PACKAGE_DIR = None
+    Xpert = Tweet = User = None  # type: ignore
+    XpertError = RateLimitError = NotFoundError = Exception  # type: ignore
+    get_user = get_timeline = _scraper_search = get_tweet = get_thread = _scraper_search_users = None  # type: ignore
+    cookies_module = None  # type: ignore
+    check_nitter_health = None  # type: ignore
+    ENGINE_DIR = None  # type: ignore
+    SESSIONS_FILE = None  # type: ignore
+    PACKAGE_DIR = None  # type: ignore
     NITTER_INSTANCES = []
     MAX_QUERY_LENGTH = 500
     LOG_FILE = Path("/dev/null")
@@ -630,7 +632,7 @@ def tweet(url: str, format: str, output: Optional[str]):
 # search
 # ---------------------------------------------------------------------------
 
-@main.command()
+@main.command(name="search")
 @click.argument("query")
 @click.option("--limit", "-n", default=10, help="Number of results")
 @click.option("--min-faves", type=int, help="Minimum likes")
@@ -703,7 +705,7 @@ def search(
     click.echo(f'Searching for "{query}"...')
 
     try:
-        tweets = xpert_search(
+        tweets = _scraper_search(
             query,
             limit=limit,
             min_faves=min_faves,
@@ -743,7 +745,7 @@ def search(
 # search-users
 # ---------------------------------------------------------------------------
 
-@main.command()
+@main.command(name="search_users")
 @click.argument("query")
 @click.option("--limit", "-n", default=10, help="Number of results")
 @click.option("--format", "-f", type=click.Choice(["json"]), default="json")
@@ -758,7 +760,7 @@ def search_users(query: str, limit: int, format: str, output: Optional[str]):
     click.echo(f'Searching for users: "{query}"...')
 
     try:
-        users = xpert_search_users(query, limit=limit)
+        users = _scraper_search_users(query, limit=limit)
 
         if not users:
             click.echo(warn(f"No users found for: {query}"))
@@ -962,7 +964,7 @@ def setup():
 
     # Nitter
     click.echo(info("2. Nitter connectivity:"))
-    if check_nitter_health:
+    if check_nitter_health is not None:
         ok_n, msg = check_nitter_health(NITTER_INSTANCES[0])
         if ok_n:
             click.echo(f"  {ok('●')} Nitter running at {NITTER_INSTANCES[0]}")
