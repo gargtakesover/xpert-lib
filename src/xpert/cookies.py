@@ -85,11 +85,13 @@ def save_cookies(token: str, ct0: str, username: str = "", account_id: str = "")
     _ensure_sessions_dir()
 
     # Nitter's sessions.jsonl format: one JSON object per line
+    # Nitter requires 'id' to be a valid integer string or int
     session_entry = {
+        "kind": "cookie",
         "auth_token": token,
         "ct0": ct0,
         "username": username,
-        "id": account_id or username,
+        "id": account_id or username or "1",
     }
 
     # Append to existing sessions (supports multi-account)
@@ -100,7 +102,7 @@ def save_cookies(token: str, ct0: str, username: str = "", account_id: str = "")
     os.chmod(SESSIONS_FILE, 0o600)
 
 
-def load_cookies(account_id: Optional[str] = None) -> dict:
+def load_cookies(account_id: str = None) -> dict:
     """Load cookies from sessions.jsonl.
 
     Args:
@@ -132,13 +134,13 @@ def get_all_accounts() -> List[dict]:
         accounts.append({
             "username": session.get("username", ""),
             "id": session.get("id", ""),
-            "token_prefix": session.get("auth_token", "")[:8],
+            "auth_token_prefix": session.get("auth_token", "")[:8],
             "ct0_prefix": session.get("ct0", "")[:8],
         })
     return accounts
 
 
-def clear_cookies(account_id: Optional[str] = None) -> None:
+def clear_cookies(account_id: str = None) -> None:
     """Remove stored sessions.
 
     Args:

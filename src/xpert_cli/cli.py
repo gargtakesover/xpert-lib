@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import click  # type: ignore
+import click
 
 try:
     from importlib.metadata import version as _get_pkg_version
@@ -35,22 +35,21 @@ try:
     from xpert import Xpert, Tweet, User, XpertError, RateLimitError, NotFoundError
     from xpert import get_user, get_timeline, search as xpert_search, get_tweet, get_thread
     from xpert import search_users as xpert_search_users
-    from xpert.scraper import search as _scraper_search
-    from xpert.scraper import search_users as _scraper_search_users
     from xpert import cookies as cookies_module
-    from xpert.config import NITTER_INSTANCES, ENGINE_DIR, SESSIONS_FILE, PACKAGE_DIR, MAX_QUERY_LENGTH, LOG_FILE
+    from xpert.config import NITTER_INSTANCES, ENGINE_DIR, SESSIONS_FILE, PACKAGE_DIR, BUNDLED_ENGINE_DIR, MAX_QUERY_LENGTH, LOG_FILE
     from xpert.scraper import check_nitter_health
     from xpert.exporters import tweets_to_format, tweets_to_csv, tweets_to_json
     MODULES_OK = True
 except ImportError as e:
-    Xpert = Tweet = User = None  # type: ignore
-    XpertError = RateLimitError = NotFoundError = Exception  # type: ignore
-    get_user = get_timeline = _scraper_search = get_tweet = get_thread = _scraper_search_users = None  # type: ignore
-    cookies_module = None  # type: ignore
-    check_nitter_health = None  # type: ignore
-    ENGINE_DIR = None  # type: ignore
-    SESSIONS_FILE = None  # type: ignore
-    PACKAGE_DIR = None  # type: ignore
+    Xpert = Tweet = User = None
+    XpertError = RateLimitError = NotFoundError = Exception
+    get_user = get_timeline = search = get_tweet = get_thread = search_users = None
+    cookies_module = None
+    check_nitter_health = None
+    ENGINE_DIR = None
+    SESSIONS_FILE = None
+    PACKAGE_DIR = None
+    BUNDLED_ENGINE_DIR = None
     NITTER_INSTANCES = []
     MAX_QUERY_LENGTH = 500
     LOG_FILE = Path("/dev/null")
@@ -85,10 +84,57 @@ def dim(text): return f"{C.DIM}{text}{C.RESET}"
 # Nitter auto-restart
 # ---------------------------------------------------------------------------
 
+def _ensure_proxy_config():
+    """Ensure nitter.conf proxy matches XPERT_PROXY env var."""
+    from xpert.config import DEFAULT_PROXY, ENGINE_DIR
+    if not ENGINE_DIR:
+        return
+    
+    nitter_conf = Path(ENGINE_DIR) / "nitter.conf"
+    if not nitter_conf.exists() or DEFAULT_PROXY is None:
+        return
+
+    try:
+        content = nitter_conf.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        changed = False
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("proxy") and not line.strip().startswith("proxyAuth"):
+                # Handle `proxy = ""` or `proxy = "http..."`
+                try:
+                    current_proxy = line.split('=', 1)[1].strip().strip('"')
+                    if current_proxy != DEFAULT_PROXY:
+                        new_lines.append(f'proxy = "{DEFAULT_PROXY}"')
+                        changed = True
+                    else:
+                        new_lines.append(line)
+                except Exception:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        if changed:
+            click.echo(info(f"Applying new proxy configuration..."), err=True)
+            nitter_conf.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+            click.echo(warn("Restarting Nitter to apply proxy changes..."), err=True)
+            subprocess.run(["docker", "compose", "restart"], cwd=str(ENGINE_DIR), capture_output=True)
+            time.sleep(2)
+    except Exception as e:
+        click.echo(err(f"Failed to update proxy config: {e}"), err=True)
+
 def ensure_nitter_running():
     """Check Nitter health and auto-restart if needed."""
     if not MODULES_OK or check_nitter_health is None:
         return
+
+    _ensure_proxy_config()
+
+    if not cookies_module.has_cookies():
+        click.echo(err("Configuration missing: Session cookies are not properly configured."))
+        click.echo("Please run 'xpert configure' to provide valid Twitter tokens.")
+        sys.exit(1)
+
     ok, msg = check_nitter_health(NITTER_INSTANCES[0])
     if ok:
         return
@@ -114,7 +160,7 @@ def ensure_nitter_running():
                 timeout=60,
             )
             if result.returncode == 0:
-                click.echo(info("Nitter container started, waiting..."))
+                click.echo(info("Nitter container started, waiting..."), err=True)
                 time.sleep(3)
                 # Verify it came up
                 ok2, msg2 = check_nitter_health(NITTER_INSTANCES[0])
@@ -122,6 +168,10 @@ def ensure_nitter_running():
                     click.echo(ok("Nitter is now running!"))
                     return
                 click.echo(warn(f"Nitter started but not responding yet: {msg2}"))
+                if "disconnected" in msg2.lower() or "refused" in msg2.lower():
+                    click.echo(err("\n⚠ Nitter crashed immediately after starting."))
+                    click.echo(warn("This is a known issue: Nitter expects OAuth 1.0 tokens (oauth_token)."))
+                    click.echo(warn("Please check your session configuration in ~/.xpert/sessions.jsonl."))
             else:
                 click.echo(err(f"Failed to start Nitter: {result.stderr}"))
         except subprocess.TimeoutExpired:
@@ -198,6 +248,21 @@ def handle_error(error: Exception, context: str = ""):
     sys.exit(1)
 
 
+
+def _check_docker():
+    import shutil, subprocess, sys
+    if not shutil.which("docker"):
+        click.echo(err("\n\u26A0 Docker is not installed!\nPlease download Docker Desktop: https://docker.com"), err=True)
+        sys.exit(1)
+    try:
+        res = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+        if res.returncode != 0:
+            click.echo(err("\n\u26A0 Docker is installed but not running in the background!\nPlease open your Docker Desktop app first."), err=True)
+            sys.exit(1)
+    except Exception:
+        click.echo(err("\n\u26A0 Docker is installed but not running in the background!\nPlease open your Docker Desktop app first."), err=True)
+        sys.exit(1)
+
 def _safe_output_path(path: str) -> Path:
     """Resolve output path and guard against path traversal."""
     resolved = Path(path).resolve()
@@ -210,14 +275,20 @@ def _safe_output_path(path: str) -> Path:
     return resolved
 
 
-def output_result(data, fmt: str, output: Optional[str]):
+def output_result(data, fmt: str, output: Optional[str], full_data: bool = False):
     """Output data in requested format."""
     try:
         if fmt == "json":
             if isinstance(data, list):
-                out = json.dumps([_tweet_to_dict(t) for t in data], indent=2, ensure_ascii=False)
+                out = json.dumps([_tweet_to_dict(t, full_data) for t in data], indent=2, ensure_ascii=False)
+            elif isinstance(data, dict) and "profile" in data:
+                composite = {
+                    "profile": _user_to_dict(data["profile"], full_data),
+                    "tweets": [_tweet_to_dict(t, full_data) for t in data.get("tweets", [])]
+                }
+                out = json.dumps(composite, indent=2, ensure_ascii=False)
             else:
-                out = json.dumps(_user_to_dict(data), indent=2, ensure_ascii=False)
+                out = json.dumps(_user_to_dict(data, full_data), indent=2, ensure_ascii=False)
             if output:
                 safe_path = _safe_output_path(output)
                 with open(safe_path, "w", encoding="utf-8") as f:
@@ -230,7 +301,7 @@ def output_result(data, fmt: str, output: Optional[str]):
                 output = click.prompt("Output file path", type=str)
             safe_path = _safe_output_path(output)
             if isinstance(data, list):
-                tweets_to_format(data, fmt, str(safe_path))
+                tweets_to_format(data, fmt, str(safe_path), full_data)
             else:
                 # User profiles can't be exported as CSV/Excel — suggest JSON
                 raise click.BadParameter(
@@ -242,8 +313,14 @@ def output_result(data, fmt: str, output: Optional[str]):
         raise click.ClickException(f"Failed to export data: {e}")
 
 
-def _tweet_to_dict(t: Tweet) -> dict:
-    return {
+def _clean_dict(d: dict, full_data: bool) -> dict:
+    if full_data:
+        return d
+    return {k: v for k, v in d.items() if v not in (None, "", [], {})}
+
+
+def _tweet_to_dict(t: Tweet, full_data: bool = False) -> dict:
+    d = {
         "id": t.id, "url": t.url, "author": t.author,
         "author_display": t.author_display, "text": t.text,
         "created_at": t.created_at, "likes": t.likes, "retweets": t.retweets,
@@ -252,15 +329,20 @@ def _tweet_to_dict(t: Tweet) -> dict:
         "is_thread": t.is_thread, "thread_position": t.thread_position,
         "thread_length": t.thread_length, "images": t.images,
     }
+    return _clean_dict(d, full_data)
 
 
-def _user_to_dict(u: User) -> dict:
-    return {
+def _user_to_dict(u: User, full_data: bool = False) -> dict:
+    d = {
         "username": u.username, "display_name": u.display_name, "bio": u.bio,
         "followers": u.followers, "following": u.following, "tweets": u.tweets,
         "url": u.url, "profile_picture": u.profile_picture, "joined": u.joined,
         "verified": u.verified,
+        # Safely include extra dynamic fields like website/location if present
+        "location": getattr(u, "location", ""),
+        "website": getattr(u, "website", ""),
     }
+    return _clean_dict(d, full_data)
 
 
 # ---------------------------------------------------------------------------
@@ -297,20 +379,20 @@ def configure(account: Optional[str]):
         click.echo(err(f"Module error: {MODULE_ERROR}"), err=True)
         sys.exit(1)
 
-    click.echo(hdr("Configure Xpert Twitter Session"))
+    click.echo(hdr("Configure Xpert Twitter Session"), err=True)
     click.echo(f"Sessions file: {dim(str(SESSIONS_FILE))}\n")
 
     # Show existing accounts if any
     existing_accounts = cookies_module.get_all_accounts()
     if existing_accounts:
-        click.echo(info("Existing accounts:"))
+        click.echo(info("Existing accounts:"), err=True)
         for acct in existing_accounts:
             click.echo(f"  {ok('●')} @{acct['username']} (id: {acct['id']})")
         click.echo("")
 
     click.echo(dim("Get tokens from twitter.com -> DevTools (F12) -> Application -> Cookies\n"))
 
-    click.echo(info("Steps:"))
+    click.echo(info("Steps:"), err=True)
     click.echo("  1. Open twitter.com in your browser")
     click.echo("  2. Open Developer Tools (F12)")
     click.echo("  3. Go to Application > Cookies > twitter.com")
@@ -333,12 +415,45 @@ def configure(account: Optional[str]):
         else:
             click.echo(warn(f"Warning: {msg}"))
 
-        click.echo(f"\n{info('Next steps:')}")
-        click.echo(f"  {info('xpert install')}   # Start Nitter (first time only)")
-        click.echo(f"  {info('xpert search hello')}   # Test it out")
+        click.echo(f"\n{info('Next steps:')}", err=True)
+        click.echo(f"  {info('xpert install')}   # Start Nitter (first time only)", err=True)
+        click.echo(f"  {info('xpert search hello')}   # Test it out", err=True)
     except cookies_module.CookieError as e:
         click.echo(err(f"Failed: {e}"), err=True)
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# stop
+# ---------------------------------------------------------------------------
+
+@main.command()
+def stop():
+    """Stop the background xpert engine."""
+    if not MODULES_OK:
+        click.echo(err("Module error"), err=True)
+        sys.exit(1)
+        
+    engine_dir = Path(ENGINE_DIR) if ENGINE_DIR else None
+    if not engine_dir or not engine_dir.exists():
+        click.echo(err("Engine not found. Run 'xpert install' first."), err=True)
+        sys.exit(1)
+        
+    click.echo(info("Stopping background Xpert engine..."), err=True)
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "stop"],
+            cwd=str(engine_dir),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            click.echo(ok("Engine properly stopped. It will auto-start next time you scan!"), err=True)
+        else:
+            click.echo(err(f"Failed to stop engine: {result.stderr}"), err=True)
+    except Exception as e:
+        click.echo(err(f"Error stopping Docker: {e}"), err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -364,28 +479,13 @@ def install(cores: bool, force: bool):
             click.echo(f"CPU cores: {ok(str(multiprocessing.cpu_count()))}")
         return
 
-    click.echo(hdr("Xpert Install"))
+    click.echo(hdr("Xpert Install"), err=True)
     # Normalize ENGINE_DIR to Path for consistent operations
     engine_dir = ENGINE_DIR if isinstance(ENGINE_DIR, Path) else Path(ENGINE_DIR)
     click.echo(f"Engine directory: {dim(str(engine_dir))}\n")
 
-    # Check if Docker is available
     try:
-        result = subprocess.run(
-            ["docker", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            click.echo(err("Docker is not installed or not running."))
-            click.echo("\nPlease install Docker: https://docs.docker.com/get-docker/")
-            sys.exit(1)
-        click.echo(f"{ok('●')} Docker: {result.stdout.strip()}")
-    except FileNotFoundError:
-        click.echo(err("Docker is not installed."))
-        click.echo("\nPlease install Docker: https://docs.docker.com/get-docker/")
-        sys.exit(1)
+        _check_docker()
     except Exception as e:
         click.echo(err(f"Error checking Docker: {e}"))
         sys.exit(1)
@@ -431,17 +531,18 @@ def install(cores: bool, force: bool):
         click.echo(err("Docker Compose is not installed."))
         sys.exit(1)
 
-    # Check if sessions are configured
+    # Check if sessions are configured at the value level
     if not cookies_module.has_cookies():
-        click.echo(warn("\n⚠ No session tokens configured."))
+        click.echo(err("\n⚠ Configuration missing: No valid session tokens found."))
         click.echo("Run 'xpert configure' first to add your Twitter auth tokens.\n")
+        sys.exit(1)
 
     # Copy engine files to user directory if running from pip-installed location
-    bundled_engine = PACKAGE_DIR / "engine"
+    bundled_engine = BUNDLED_ENGINE_DIR
     user_engine = engine_dir
     if bundled_engine.exists() and str(bundled_engine) != str(user_engine):
         if not user_engine.exists() or force:
-            click.echo(info(f"\nInstalling engine to {user_engine}..."))
+            click.echo(info(f"\nInstalling engine to {user_engine}..."), err=True)
             import shutil
             try:
                 if force and user_engine.exists():
@@ -484,7 +585,7 @@ def install(cores: bool, force: bool):
             pass  # Fallback: docker will use its own sessions if file missing
 
     # Start Nitter
-    click.echo(info("\nStarting Nitter and Redis containers..."))
+    click.echo(info("\nStarting Nitter and Redis containers..."), err=True)
     try:
         result = subprocess.run(
             ["docker", "compose", "up", "-d"],
@@ -497,7 +598,7 @@ def install(cores: bool, force: bool):
             click.echo(err(f"Failed to start containers: {result.stderr}"))
             sys.exit(1)
 
-        click.echo(info("Waiting for Nitter to be ready..."))
+        click.echo(info("Waiting for Nitter to be ready..."), err=True)
         time.sleep(5)
 
         # Check if Nitter is healthy
@@ -505,8 +606,8 @@ def install(cores: bool, force: bool):
         if ok_n:
             click.echo(ok(f"\n✓ Nitter is running at {NITTER_INSTANCES[0]}"))
             click.echo(f"\n{ok('Installation complete!')}")
-            click.echo(f"\n{info('Next steps:')}")
-            click.echo(f"  {info('xpert search hello')}   # Try your first search")
+            click.echo(f"\n{info('Next steps:')}", err=True)
+            click.echo(f"  {info('xpert search hello')}   # Try your first search", err=True)
         else:
             click.echo(warn(f"\n⚠ Nitter started but not responding: {msg}"))
             click.echo("Wait a few seconds and run 'xpert status' to check again.")
@@ -554,12 +655,12 @@ def cookies(token: Optional[str], ct0: Optional[str], clear: bool, account: Opti
 
     # Show status for all accounts
     status = cookies_module.get_cookies_status()
-    click.echo(hdr("Session Status"))
+    click.echo(hdr("Session Status"), err=True)
     click.echo(f"File: {dim(status['sessions_file'])}")
     if not status["configured"]:
         click.echo(f"{warn('○')} Not configured")
-        click.echo(f"\n  Run: {info('xpert configure')}")
-        click.echo(f"  Or:  {info('xpert cookies --token TOKEN --ct0 CT0')}")
+        click.echo(f"\n  Run: {info('xpert configure')}", err=True)
+        click.echo(f"  Or:  {info('xpert cookies --token TOKEN --ct0 CT0')}", err=True)
         return
 
     click.echo(f"{ok('●')} {status['account_count']} account(s) configured:")
@@ -579,15 +680,23 @@ def cookies(token: Optional[str], ct0: Optional[str], clear: bool, account: Opti
 @click.option("--limit", "-n", default=10, help="Number of tweets")
 @click.option("--format", "-f", type=click.Choice(["json", "csv", "excel", "markdown"]), default="json", help="Output format")
 @click.option("--output", "-o", help="Output file")
-def user(username: str, limit: int, format: str, output: Optional[str]):
+@click.option("--delay", type=float, default=None, help="Scraping delay in seconds")
+@click.option("--full-data", is_flag=True, help="Include empty fields in JSON/CSV")
+def user(username: str, limit: int, format: str, output: Optional[str], delay: Optional[float], full_data: bool):
     """Get user profile and recent tweets."""
+    if limit > 800:
+        click.echo(warn("Warning: Nitter enforces a maximum of 800 results per query. Clamping limit to 800."), err=True)
+        limit = 800
     if not MODULES_OK:
         click.echo(err("Module error"), err=True)
         sys.exit(1)
 
     ensure_nitter_running()
+    if delay is not None:
+        from xpert import config
+        config.CURRENT_DELAY = delay
     username = username.lstrip("@")
-    click.echo(f"Fetching @{username}...")
+    click.echo(f"Fetching @{username}...", err=True)
 
     try:
         profile = get_user(username)
@@ -596,14 +705,14 @@ def user(username: str, limit: int, format: str, output: Optional[str]):
         click.echo(f"\n{format_user(profile)}\n")
 
         if tweets:
-            click.echo(hdr(f"Recent Tweets ({len(tweets)}):"))
+            click.echo(hdr(f"Recent Tweets ({len(tweets)}):"), err=True)
             for t in tweets[:5]:
                 click.echo(f"\n---")
                 click.echo(format_tweet(t))
             if len(tweets) > 5:
                 click.echo(dim(f"\n... and {len(tweets) - 5} more"))
 
-        output_result({"profile": profile, "tweets": tweets}, format, output)
+        output_result({"profile": profile, "tweets": tweets}, format, output, full_data)
 
     except Exception as e:
         handle_error(e, f"user @{username}")
@@ -617,19 +726,24 @@ def user(username: str, limit: int, format: str, output: Optional[str]):
 @click.argument("url")
 @click.option("--format", "-f", type=click.Choice(["json", "csv", "excel", "markdown"]), default="json")
 @click.option("--output", "-o", help="Output file")
-def tweet(url: str, format: str, output: Optional[str]):
+@click.option("--delay", type=float, default=None, help="Scraping delay in seconds")
+@click.option("--full-data", is_flag=True, help="Include empty fields in JSON/CSV")
+def tweet(url: str, format: str, output: Optional[str], delay: Optional[float], full_data: bool):
     """Scrape a single tweet by URL."""
     if not MODULES_OK:
         click.echo(err("Module error"), err=True)
         sys.exit(1)
 
     ensure_nitter_running()
-    click.echo(f"Fetching tweet...")
+    if delay is not None:
+        from xpert import config
+        config.CURRENT_DELAY = delay
+    click.echo(f"Fetching tweet...", err=True)
 
     try:
         t = get_tweet(url)
         click.echo(f"\n{format_tweet(t)}\n")
-        output_result([t], format, output)
+        output_result([t], format, output, full_data)
     except Exception as e:
         handle_error(e, "tweet URL")
 
@@ -638,7 +752,7 @@ def tweet(url: str, format: str, output: Optional[str]):
 # search
 # ---------------------------------------------------------------------------
 
-@main.command(name="search")
+@main.command()
 @click.argument("query")
 @click.option("--limit", "-n", default=10, help="Number of results")
 @click.option("--min-faves", type=int, help="Minimum likes")
@@ -656,6 +770,8 @@ def tweet(url: str, format: str, output: Optional[str]):
 @click.option("--query-type", type=click.Choice(["live", "top", "latest"]), default="live", help="Sort order")
 @click.option("--format", "-f", type=click.Choice(["json", "csv", "excel", "markdown"]), default="json")
 @click.option("--output", "-o", help="Output file")
+@click.option("--delay", type=float, default=None, help="Scraping delay in seconds")
+@click.option("--full-data", is_flag=True, help="Include empty fields in JSON/CSV")
 def search(
     query: str,
     limit: int,
@@ -674,13 +790,21 @@ def search(
     query_type: str,
     format: str,
     output: Optional[str],
+    delay: Optional[float],
+    full_data: bool,
 ):
     """Search tweets by query with full filter support."""
+    if limit > 800:
+        click.echo(warn("Warning: Nitter enforces a maximum of 800 results per query. Clamping limit to 800."), err=True)
+        limit = 800
     if not MODULES_OK:
         click.echo(err("Module error"), err=True)
         sys.exit(1)
 
     ensure_nitter_running()
+    if delay is not None:
+        from xpert import config
+        config.CURRENT_DELAY = delay
 
     # Validate date filters
     from datetime import datetime
@@ -708,10 +832,10 @@ def search(
         click.echo(err(f"Query too long ({len(query)} chars). Maximum is {MAX_QUERY_LENGTH}."), err=True)
         sys.exit(1)
 
-    click.echo(f'Searching for "{query}"...')
+    click.echo(f'Searching for "{query}"...', err=True)
 
     try:
-        tweets = _scraper_search(
+        tweets = xpert_search(
             query,
             limit=limit,
             min_faves=min_faves,
@@ -732,16 +856,16 @@ def search(
         if not tweets:
             click.echo(warn(f"No results for: {query}"))
             if min_faves or min_retweets or min_replies:
-                click.echo(info("Try removing engagement filters"))
+                click.echo(info("Try removing engagement filters"), err=True)
             return
 
-        click.echo(hdr(f"Found {len(tweets)} tweets:"))
+        click.echo(hdr(f"Found {len(tweets)} tweets:"), err=True)
         for i, t in enumerate(tweets[:10], 1):
             click.echo(f"\n{i}. {format_tweet(t)}")
         if len(tweets) > 10:
             click.echo(dim(f"\n... and {len(tweets) - 10} more"))
 
-        output_result(tweets, format, output)
+        output_result(tweets, format, output, full_data)
 
     except Exception as e:
         handle_error(e, f"search '{query}'")
@@ -751,31 +875,39 @@ def search(
 # search-users
 # ---------------------------------------------------------------------------
 
-@main.command(name="search_users")
+@main.command()
 @click.argument("query")
 @click.option("--limit", "-n", default=10, help="Number of results")
 @click.option("--format", "-f", type=click.Choice(["json"]), default="json")
 @click.option("--output", "-o", help="Output file")
-def search_users(query: str, limit: int, format: str, output: Optional[str]):
+@click.option("--delay", type=float, default=None, help="Scraping delay in seconds")
+@click.option("--full-data", is_flag=True, help="Include empty fields in JSON/CSV")
+def search_users(query: str, limit: int, format: str, output: Optional[str], delay: Optional[float], full_data: bool):
     """Search for users by query."""
+    if limit > 800:
+        click.echo(warn("Warning: Nitter enforces a maximum of 800 results per query. Clamping limit to 800."), err=True)
+        limit = 800
     if not MODULES_OK:
         click.echo(err("Module error"), err=True)
         sys.exit(1)
 
     ensure_nitter_running()
-    click.echo(f'Searching for users: "{query}"...')
+    if delay is not None:
+        from xpert import config
+        config.CURRENT_DELAY = delay
+    click.echo(f'Searching for users: "{query}"...', err=True)
 
     try:
-        users = _scraper_search_users(query, limit=limit)
+        users = xpert_search_users(query, limit=limit)
 
         if not users:
             click.echo(warn(f"No users found for: {query}"))
             return
 
-        click.echo(hdr(f"Found {len(users)} users:"))
+        click.echo(hdr(f"Found {len(users)} users:"), err=True)
         for i, u in enumerate(users[:20], 1):
             verified = ok(" ✓") if u.verified else ""
-            click.echo(f"\n{i}. {hdr('@' + u.username)}{verified}")
+            click.echo(f"\n{i}. {hdr('@' + u.username)}{verified}", err=True)
             click.echo(f"   {u.display_name}")
             if u.bio:
                 bio_short = u.bio[:80] + "..." if len(u.bio) > 80 else u.bio
@@ -789,10 +921,10 @@ def search_users(query: str, limit: int, format: str, output: Optional[str]):
         if output:
             safe_path = _safe_output_path(output)
             with open(safe_path, "w", encoding="utf-8") as f:
-                json.dump([_user_to_dict(u) for u in users], f, indent=2, ensure_ascii=False)
+                json.dump([_user_to_dict(u, full_data) for u in users], f, indent=2, ensure_ascii=False)
             click.echo(ok(f"Saved to {safe_path}"))
         else:
-            click.echo(json.dumps([_user_to_dict(u) for u in users], indent=2, ensure_ascii=False))
+            click.echo(json.dumps([_user_to_dict(u, full_data) for u in users], indent=2, ensure_ascii=False))
 
     except Exception as e:
         handle_error(e, f"search-users '{query}'")
@@ -807,15 +939,23 @@ def search_users(query: str, limit: int, format: str, output: Optional[str]):
 @click.option("--limit", "-n", default=10, help="Number of tweets")
 @click.option("--format", "-f", type=click.Choice(["json", "csv", "excel", "markdown"]), default="json")
 @click.option("--output", "-o", help="Output file")
-def timeline(username: str, limit: int, format: str, output: Optional[str]):
+@click.option("--delay", type=float, default=None, help="Scraping delay in seconds")
+@click.option("--full-data", is_flag=True, help="Include empty fields in JSON/CSV")
+def timeline(username: str, limit: int, format: str, output: Optional[str], delay: Optional[float], full_data: bool):
     """Get user timeline (recent tweets)."""
+    if limit > 800:
+        click.echo(warn("Warning: Nitter enforces a maximum of 800 results per query. Clamping limit to 800."), err=True)
+        limit = 800
     if not MODULES_OK:
         click.echo(err("Module error"), err=True)
         sys.exit(1)
 
     ensure_nitter_running()
+    if delay is not None:
+        from xpert import config
+        config.CURRENT_DELAY = delay
     username = username.lstrip("@")
-    click.echo(f"Fetching timeline for @{username}...")
+    click.echo(f"Fetching timeline for @{username}...", err=True)
 
     try:
         tweets = get_timeline(username, limit=limit)
@@ -824,13 +964,13 @@ def timeline(username: str, limit: int, format: str, output: Optional[str]):
             click.echo(warn(f"No tweets found for @{username}"))
             return
 
-        click.echo(hdr(f"@{username}'s Timeline ({len(tweets)} tweets):"))
+        click.echo(hdr(f"@{username}'s Timeline ({len(tweets)} tweets):"), err=True)
         for i, t in enumerate(tweets[:10], 1):
             click.echo(f"\n{i}. {format_tweet(t)}")
         if len(tweets) > 10:
             click.echo(dim(f"\n... and {len(tweets) - 10} more"))
 
-        output_result(tweets, format, output)
+        output_result(tweets, format, output, full_data)
 
     except Exception as e:
         handle_error(e, f"timeline @{username}")
@@ -844,14 +984,19 @@ def timeline(username: str, limit: int, format: str, output: Optional[str]):
 @click.argument("url")
 @click.option("--format", "-f", type=click.Choice(["json", "csv", "excel", "markdown"]), default="json")
 @click.option("--output", "-o", help="Output file")
-def thread(url: str, format: str, output: Optional[str]):
+@click.option("--delay", type=float, default=None, help="Scraping delay in seconds")
+@click.option("--full-data", is_flag=True, help="Include empty fields in JSON/CSV")
+def thread(url: str, format: str, output: Optional[str], delay: Optional[float], full_data: bool):
     """Unroll/expand a thread by tweet URL."""
     if not MODULES_OK:
         click.echo(err("Module error"), err=True)
         sys.exit(1)
 
     ensure_nitter_running()
-    click.echo("Fetching thread...")
+    if delay is not None:
+        from xpert import config
+        config.CURRENT_DELAY = delay
+    click.echo("Fetching thread...", err=True)
 
     try:
         tweets = get_thread(url)
@@ -860,12 +1005,12 @@ def thread(url: str, format: str, output: Optional[str]):
             click.echo(warn("No thread found"))
             return
 
-        click.echo(hdr(f"Thread ({len(tweets)} tweets):"))
+        click.echo(hdr(f"Thread ({len(tweets)} tweets):"), err=True)
         for t in tweets:
-            click.echo(f"\n{hdr(f'Tweet {t.thread_position}/{t.thread_length}')}")
+            click.echo(f"\n{hdr(f'Tweet {t.thread_position}/{t.thread_length}')}", err=True)
             click.echo(format_tweet(t))
 
-        output_result(tweets, format, output)
+        output_result(tweets, format, output, full_data)
 
     except Exception as e:
         handle_error(e, f"thread {url}")
@@ -910,28 +1055,32 @@ def status(verbose: bool, as_json: bool):
         click.echo(json.dumps(output, indent=2))
         return
 
-    click.echo(hdr("Xpert Status"))
+    click.echo(hdr("Xpert Status"), err=True)
     click.echo("")
 
     # Cookies
-    click.echo(info("Authentication:"))
+    click.echo(info("Authentication:"), err=True)
     if status_cookies["configured"]:
         click.echo(f"  {ok('●')} Cookies configured")
         click.echo(f"    auth_token: {status_cookies['token_prefix']}...")
         click.echo(f"    ct0: {status_cookies['ct0_prefix']}...")
     else:
         click.echo(f"  {warn('○')} Cookies not configured")
-        click.echo(f"    Run: {info('xpert configure')}")
+        click.echo(f"    Run: {info('xpert configure')}", err=True)
 
     click.echo("")
 
     # Nitter
-    click.echo(info("Nitter Connectivity:"))
+    click.echo(info("Nitter Connectivity:"), err=True)
     for inst_data in nitter_statuses:
         if inst_data["ok"]:
             click.echo(f"  {ok('●')} {inst_data['url']}: {inst_data['message']}")
         else:
             click.echo(f"  {err('✗')} {inst_data['url']}: {inst_data['message']}")
+            if "disconnected" in inst_data['message'].lower() or "refused" in inst_data['message'].lower():
+                click.echo(warn("    ↳ Hint: Nitter is permanently crashing on startup."))
+                click.echo(warn("      This happens when sessions.jsonl contains auth_token/ct0 web cookies"))
+                click.echo(warn("      instead of the OAuth 1.0 (auth_token/ct0) format it expects."))
             if verbose:
                 click.echo(err("  Troubleshooting:"))
                 click.echo("    docker ps | grep nitter", err=True)
@@ -955,12 +1104,12 @@ def status(verbose: bool, as_json: bool):
 @main.command()
 def setup():
     """First-time setup wizard."""
-    click.echo(hdr("Welcome to Xpert!"))
+    click.echo(hdr("Welcome to Xpert!"), err=True)
     click.echo("")
     click.echo("Let's get you set up to access X data from the command line.\n")
 
     # Python version
-    click.echo(info("1. Python version:"))
+    click.echo(info("1. Python version:"), err=True)
     v = sys.version_info
     if v.major >= 3 and v.minor >= 9:
         click.echo(f"  {ok(f'Python {v.major}.{v.minor}.{v.micro} ✓')}")
@@ -969,8 +1118,8 @@ def setup():
     click.echo("")
 
     # Nitter
-    click.echo(info("2. Nitter connectivity:"))
-    if check_nitter_health is not None:
+    click.echo(info("2. Nitter connectivity:"), err=True)
+    if check_nitter_health:
         ok_n, msg = check_nitter_health(NITTER_INSTANCES[0])
         if ok_n:
             click.echo(f"  {ok('●')} Nitter running at {NITTER_INSTANCES[0]}")
@@ -981,15 +1130,15 @@ def setup():
     click.echo("")
 
     # Sessions
-    click.echo(info("3. Twitter session tokens:"))
+    click.echo(info("3. Twitter session tokens:"), err=True)
     if cookies_module and cookies_module.has_cookies():
         click.echo(f"  {ok('●')} Configured in sessions.jsonl")
     else:
         click.echo(f"  {warn('○')} Not configured")
-        click.echo(f"\n  Run: {info('xpert configure')}")
+        click.echo(f"\n  Run: {info('xpert configure')}", err=True)
 
     click.echo("")
-    click.echo(hdr("Next steps:"))
+    click.echo(hdr("Next steps:"), err=True)
     click.echo("  xpert install            # Start Nitter (first time only)")
     click.echo("  xpert configure          # Add Twitter session tokens")
     click.echo("  xpert search hello      # Try your first search")
@@ -1008,10 +1157,10 @@ def upgrade():
         click.echo(err(f"Module error: {MODULE_ERROR}"), err=True)
         sys.exit(1)
 
-    click.echo(hdr("Xpert Upgrade"))
+    click.echo(hdr("Xpert Upgrade"), err=True)
 
     # Step 1: Upgrade xpert Python package via pip
-    click.echo(info("Upgrading xpert package..."))
+    click.echo(info("Upgrading xpert package..."), err=True)
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", "xpert"],
@@ -1035,7 +1184,7 @@ def upgrade():
         sys.exit(1)
 
     # Step 2: Pull latest Nitter Docker image
-    click.echo(info("\nPulling latest Nitter Docker image..."))
+    click.echo(info("\nPulling latest Nitter Docker image..."), err=True)
     try:
         result = subprocess.run(
             ["docker", "pull", "zedeus/nitter:latest"],
@@ -1058,7 +1207,7 @@ def upgrade():
     engine_dir = ENGINE_DIR if isinstance(ENGINE_DIR, Path) else Path(ENGINE_DIR)
     bundled_engine = PACKAGE_DIR / "engine"
     if bundled_engine.exists() and bundled_engine != engine_dir:
-        click.echo(info("\nUpdating bundled engine..."))
+        click.echo(info("\nUpdating bundled engine..."), err=True)
         import shutil
         try:
             if engine_dir.exists():
@@ -1069,7 +1218,7 @@ def upgrade():
             click.echo(warn(f"Could not update bundled engine: {e}"))
 
     # Step 4: Restart Nitter with new image
-    click.echo(info("\nRestarting Nitter containers..."))
+    click.echo(info("\nRestarting Nitter containers..."), err=True)
     if engine_dir.exists():
         try:
             # Restart containers to use new image
@@ -1090,10 +1239,10 @@ def upgrade():
                 click.echo(warn(f"Nitter restarted but not responding yet: {msg}"))
         except Exception as e:
             click.echo(warn(f"Could not restart Nitter: {e}"))
-            click.echo(f"\nTo restart manually: {info('cd {engine_dir} && docker compose up -d')}")
+            click.echo(f"\nTo restart manually: {info('cd {engine_dir} && docker compose up -d')}", err=True)
 
     click.echo(f"\n{ok('Upgrade complete!')}")
-    click.echo(f"Run {info('xpert status')} to verify everything is working.")
+    click.echo(f"Run {info('xpert status')} to verify everything is working.", err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1123,7 +1272,7 @@ def logs(container: str, lines: int, follow: bool):
         services.append("nitter-redis")
 
     for svc in services:
-        click.echo(hdr(f"=== {svc} logs (last {lines} lines) ==="))
+        click.echo(hdr(f"=== {svc} logs (last {lines} lines) ==="), err=True)
         try:
             cmd = ["docker", "compose", "logs", "--tail", str(lines)]
             if follow:
@@ -1144,4 +1293,53 @@ def logs(container: str, lines: int, follow: bool):
             click.echo(err("Logs command timed out."))
         except Exception as e:
             click.echo(err(f"Error fetching logs: {e}"))
+
+
+# ---------------------------------------------------------------------------
+# Account Management
+# ---------------------------------------------------------------------------
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def account(ctx):
+    """Manage multi-account proxy configurations (sessions)."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+@account.command("add")
+@click.argument("alias")
+@click.option("--auth-token", required=True, help="auth_token cookie")
+@click.option("--ct0", required=True, help="ct0 cookie")
+def account_add(alias, auth_token, ct0):
+    """Add a new Twitter account session."""
+    try:
+        cookies_module.save_cookies(auth_token, ct0, username=alias, account_id=alias)
+        click.echo(ok(f"Account '{alias}' added successfully!"))
+    except Exception as e:
+        click.echo(err(f"Failed to add account: {e}"), err=True)
+
+@account.command("list")
+def account_list():
+    """List loaded Twitter accounts."""
+    try:
+        accounts = cookies_module.get_all_accounts()
+        if not accounts:
+            click.echo(warn("No accounts found in sessions.jsonl."))
+            return
+        click.echo(hdr("Loaded Accounts:"), err=True)
+        for acc in accounts:
+            id_str = acc.get('id') or acc.get('username') or 'unnamed'
+            click.echo(f"- {ok(id_str)} (auth: {acc.get('auth_token_prefix')}...)", err=True)
+    except Exception as e:
+        click.echo(err(f"Failed to list accounts: {e}"), err=True)
+
+@account.command("remove")
+@click.argument("alias")
+def account_remove(alias):
+    """Remove a Twitter account by alias."""
+    try:
+        cookies_module.clear_cookies(alias)
+        click.echo(ok(f"Account '{alias}' seamlessly decoupled from sessions.jsonl!"))
+    except Exception as e:
+        click.echo(err(f"Failed to remove account: {e}"), err=True)
 

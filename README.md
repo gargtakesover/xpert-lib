@@ -5,7 +5,33 @@
 
 **Access X (Twitter) data from the command line. No API key needed.**
 
-`xpert` is a free, open-source CLI tool and Python library that scrapes X.com through a self-hosted proxy called [Nitter](https://github.com/zedeus/nitter). It lets you fetch user profiles, timelines, search results, individual tweets, and full threads — entirely without paying for Twitter's expensive official API.
+`xpert` is a free, open-source CLI tool and Python library that lets you fetch user profiles, timelines, search results, individual tweets, and full threads — entirely without paying for Twitter's expensive official API.
+
+---
+
+## 🟢 For Beginners (No Coding Required)
+
+Never used a terminal before? Don't worry! You can use `xpert` easily.
+
+This tool runs inside your computer's "Terminal" (Mac/Linux) or "Command Prompt" (Windows). To make it work reliably without getting banned by Twitter, it uses a background app called **Docker**.
+
+### Step 1: Install Docker Desktop
+Since `xpert` works identically across Windows, Mac, and Linux, you just need to install Docker for your specific computer and keep the app running in the background.
+* **Windows**: [Download Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+* **Mac**: [Download Docker Desktop for Mac](https://docs.docker.com/desktop/install/mac-install/) (Choose Apple Silicon or Intel)
+* **Linux**: [Install Docker Engine](https://docs.docker.com/engine/install/)
+
+**Important:** After installing, open the Docker app and make sure it is running in the background before moving to the next step.
+
+### Step 2: Get Your Twitter Cookies
+To access Twitter, `xpert` securely borrows your browser session. 
+1. Log into your account on [x.com](https://x.com) using Google Chrome, Edge, or Firefox.
+2. Press **F12** (or Right Click -> Inspect) to open Developer Tools.
+3. At the top of that new panel, click the **Application** tab (in Firefox, it's called **Storage**).
+4. On the left side, expand the **Cookies** folder and click on `https://x.com`.
+5. Look through the list on the right and copy the "Value" text for the row named `auth_token`, and the row named `ct0`.
+
+You are now ready to install the tool!
 
 ---
 
@@ -44,9 +70,9 @@ xpert search "hello world" --limit 5
 Before installing `xpert`, ensure you have the following system requirements:
 
 1. **Python 3.9 or newer**: Verify your version using `python3 --version`.
-2. **Docker**: `xpert` uses Docker to automatically run the Nitter backend.
+2. **Docker**: `xpert` uses Docker to automatically run the backend.
    - Verify installation: `docker --version`
-   - **Note:** Ensure your Docker daemon is running (e.g., Docker Desktop is open on macOS/Windows) before proceeding.
+   - **Crucial:** Ensure your Docker daemon is running (Docker Desktop must be open on macOS/Windows) before proceeding.
 
 ---
 

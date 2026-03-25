@@ -5,17 +5,37 @@ from pathlib import Path
 
 # Package directory (engine/ is bundled alongside src/)
 PACKAGE_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = PACKAGE_DIR.parent
+
+BUNDLED_ENGINE_DIR = PACKAGE_DIR / "engine"
+if not BUNDLED_ENGINE_DIR.exists() and (PROJECT_ROOT / "engine").exists():
+    BUNDLED_ENGINE_DIR = PROJECT_ROOT / "engine"
 
 # Config directory (~/.xpert for miscellaneous settings)
 CONFIG_DIR = Path(os.path.expanduser("~/.xpert"))
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Auto-load environment variables from ~/.xpert/.env
+_env_path = CONFIG_DIR / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ.setdefault(key.strip(), val.strip())
+
+# Configurable Defaults
+DEFAULT_DELAY = float(os.environ.get("XPERT_DELAY", "1.0"))
+CURRENT_DELAY = DEFAULT_DELAY
+DEFAULT_PROXY = os.environ.get("XPERT_PROXY", "")
+
 # Engine directory (bundled Nitter Docker setup)
 # Use ~/.xpert/engine for installed packages (user-writable, Docker-accessible)
 # Fall back to bundled engine/ for development
-if (PACKAGE_DIR / "engine").exists():
+if BUNDLED_ENGINE_DIR.exists():
     # Development: use bundled engine/ next to source
-    ENGINE_DIR = PACKAGE_DIR / "engine"
+    ENGINE_DIR = BUNDLED_ENGINE_DIR
 else:
     # Installed via pip: use user-writable directory Docker can access
     ENGINE_DIR = CONFIG_DIR / "engine"
@@ -33,7 +53,6 @@ LOG_FILE = CONFIG_DIR / "xpert.log"
 # Nitter instances
 NITTER_INSTANCES = [
     "http://localhost:8080",
-    "http://localhost:8081",
 ]
 
 # User agent

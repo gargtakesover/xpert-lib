@@ -18,9 +18,16 @@ TWEET_COLUMNS = [
 ]
 
 
-def _flatten_tweet(tweet) -> dict:
+def _clean_dict(d: dict, full_data: bool) -> dict:
+    """Remove empty/falsy fields unless full_data is requested."""
+    if full_data:
+        return d
+    return {k: v for k, v in d.items() if v not in (None, "", [], {})}
+
+
+def _flatten_tweet(tweet, full_data: bool = False) -> dict:
     """Flatten a Tweet object into a dict for CSV/Excel."""
-    return {
+    d = {
         "id": tweet.id,
         "url": tweet.url,
         "author": tweet.author,
@@ -39,14 +46,16 @@ def _flatten_tweet(tweet) -> dict:
         "thread_position": tweet.thread_position,
         "thread_length": tweet.thread_length,
     }
+    return _clean_dict(d, full_data)
 
 
-def _flatten_user(user) -> dict:
+def _flatten_user(user, full_data: bool = False) -> dict:
     """Flatten a User object."""
-    return {
+    d = {
         "username": user.username,
         "display_name": user.display_name,
         "bio": user.bio,
+        "email": getattr(user, "email", ""),
         "followers": user.followers,
         "following": user.following,
         "tweets": user.tweets,
@@ -55,11 +64,12 @@ def _flatten_user(user) -> dict:
         "joined": user.joined,
         "verified": user.verified,
     }
+    return _clean_dict(d, full_data)
 
 
-def tweets_to_csv(tweets: List, output: Optional[str] = None) -> str:
+def tweets_to_csv(tweets: List, output: Optional[str] = None, full_data: bool = False) -> str:
     """Export tweets to CSV."""
-    rows = [_flatten_tweet(t) for t in tweets]
+    rows = [_flatten_tweet(t, full_data) for t in tweets]
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=TWEET_COLUMNS)
     writer.writeheader()
@@ -72,9 +82,9 @@ def tweets_to_csv(tweets: List, output: Optional[str] = None) -> str:
     return content
 
 
-def tweets_to_json(tweets: List, output: Optional[str] = None, pretty: bool = True) -> str:
+def tweets_to_json(tweets: List, output: Optional[str] = None, pretty: bool = True, full_data: bool = False) -> str:
     """Export tweets to JSON."""
-    data = [_flatten_tweet(t) for t in tweets]
+    data = [_flatten_tweet(t, full_data) for t in tweets]
     indent = 2 if pretty else None
     content = json.dumps(data, indent=indent, ensure_ascii=False)
     if output:
@@ -84,14 +94,13 @@ def tweets_to_json(tweets: List, output: Optional[str] = None, pretty: bool = Tr
     return content
 
 
-def tweets_to_markdown(tweets: List, output: Optional[str] = None) -> str:
+def tweets_to_markdown(tweets: List, output: Optional[str] = None, full_data: bool = False) -> str:
     """Export tweets to Markdown table."""
     lines = ["# Xpert Scrape Results\n"]
     lines.append("| # | Author | Text | Likes | Retweets | Date |")
     lines.append("|---|--------|------|-------|----------|------|")
     for i, t in enumerate(tweets, 1):
-        text = t.text[:50] + "..." if len(t.text) > 50 else t.text
-        text = text.replace("|", "\\|").replace("\n", " ")
+        text = t.text.replace("|", "\\|").replace("\n", "<br>")
         lines.append(f"| {i} | @{t.author} | {text} | {t.likes} | {t.retweets} | {t.created_at[:10]} |")
     content = "\n".join(lines)
     if output:
@@ -101,20 +110,20 @@ def tweets_to_markdown(tweets: List, output: Optional[str] = None) -> str:
     return content
 
 
-def tweets_to_excel(tweets: List, output: Optional[str] = None) -> Union[bytes, str]:
+def tweets_to_excel(tweets: List, output: Optional[str] = None, full_data: bool = False) -> Union[bytes, str]:
     """Export tweets to Excel (.xlsx)."""
     try:
-        import pandas as pd  # type: ignore
+        import pandas as pd
     except ImportError:
         raise ImportError("pandas and openpyxl required for Excel export. Install with: pip install xpert[excel]")
 
-    rows = [_flatten_tweet(t) for t in tweets]
+    rows = [_flatten_tweet(t, full_data) for t in tweets]
     df = pd.DataFrame(rows, columns=TWEET_COLUMNS)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Tweets")
         ws = writer.sheets["Tweets"]
-        from openpyxl.styles import Font, PatternFill  # type: ignore
+        from openpyxl.styles import Font, PatternFill
         header_font = Font(bold=True, color="FFFFFF", size=11)
         header_fill = PatternFill(start_color="1DA1F2", end_color="1DA1F2", fill_type="solid")
         for col_idx in range(1, len(TWEET_COLUMNS) + 1):
@@ -132,16 +141,16 @@ def tweets_to_excel(tweets: List, output: Optional[str] = None) -> Union[bytes, 
     return data
 
 
-def tweets_to_format(tweets: List, fmt: str, output: str) -> Union[bytes, str]:
+def tweets_to_format(tweets: List, fmt: str, output: str, full_data: bool = False) -> str:
     """Export tweets in specified format. Writes to output file."""
     fmt = fmt.lower()
     if fmt == "csv":
-        return tweets_to_csv(tweets, output)
+        return tweets_to_csv(tweets, output, full_data)
     elif fmt == "excel":
-        return tweets_to_excel(tweets, output)
+        return tweets_to_excel(tweets, output, full_data)
     elif fmt == "markdown":
-        return tweets_to_markdown(tweets, output)
+        return tweets_to_markdown(tweets, output, full_data)
     elif fmt == "json":
-        return tweets_to_json(tweets, output)
+        return tweets_to_json(tweets, output, full_data=full_data)
     else:
         raise ValueError(f"Unknown format: {fmt}. Use: csv, excel, json, markdown")

@@ -84,3 +84,4 @@ engine/sessions.jsonl
 
 # xpert.egg-info from pip install -e
 src/xpert.egg-info/
+.test/
