@@ -23,6 +23,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# Force UTF-8 output on Windows to prevent charmap errors with Unicode characters
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass  # Python < 3.7: no reconfigure, ignore
+
 import click
 
 try:
@@ -328,6 +336,9 @@ def _tweet_to_dict(t: Tweet, full_data: bool = False) -> dict:
         "is_reply": t.is_reply, "is_retweet": t.is_retweet, "is_pinned": t.is_pinned,
         "is_thread": t.is_thread, "thread_position": t.thread_position,
         "thread_length": t.thread_length, "images": t.images,
+        "is_edited": t.is_edited,
+        "has_community_note": t.has_community_note,
+        "community_note": t.community_note,
     }
     return _clean_dict(d, full_data)
 
