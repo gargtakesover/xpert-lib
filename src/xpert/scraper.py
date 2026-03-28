@@ -18,7 +18,7 @@ from urllib.parse import unquote
 import httpx
 from bs4 import BeautifulSoup
 
-from xpert.config import NITTER_INSTANCES, UA, REQUEST_TIMEOUT, DEFAULT_LIMIT
+from xpert.config import NITTER_INSTANCES, UA, REQUEST_TIMEOUT, DEFAULT_LIMIT, concurrency_limit
 from xpert.circuit_breaker import nitter_circuit
 from xpert.selectors import check_selector_health, get_degraded_selectors
 
@@ -149,8 +149,9 @@ def check_selector_health_public(base_url: str = None) -> Dict[str, int]:
     _raise_nitter_unreachable(base_url)
     base_url = base_url or NITTER_INSTANCES[0]
     # Use a popular account for testing
-    with _build_client() as client:
-        html = fetch_page(client, "/BillGates")
+    with concurrency_limit():
+        with _build_client() as client:
+            html = fetch_page(client, "/BillGates")
     if not html:
         return {}
     return check_selector_health(html)
@@ -645,10 +646,11 @@ def get_user(username: str) -> User:
     username = username.lstrip("@")
     now = datetime.now(timezone.utc).isoformat()
 
-    with _build_client() as client:
-        html = fetch_page(client, f"/{username}")
-        if not html:
-            raise XpertError(f"Could not fetch profile for @{username}")
+    with concurrency_limit():
+        with _build_client() as client:
+            html = fetch_page(client, f"/{username}")
+            if not html:
+                raise XpertError(f"Could not fetch profile for @{username}")
 
     soup = BeautifulSoup(html, "lxml")
 
@@ -752,31 +754,32 @@ def get_timeline(username: str, limit: int = DEFAULT_LIMIT) -> List[Tweet]:
     all_tweets = []
     seen_ids = set()  # Cross-page dedup
     cursor = ""
-    with _build_client() as client:
-        while len(all_tweets) < limit:
-            path = f"/{username}"
-            if cursor:
-                path += f"?cursor={cursor}"
-            html = fetch_page(client, path)
-            if not html:
-                break
-            parsed = _parse_page(html)
-            if not parsed:
-                break
-            # Cross-page dedup by tweet ID
-            for tweet_dict in parsed:
-                tweet_id = tweet_dict.get("id", "")
-                if tweet_id and tweet_id not in seen_ids:
-                    seen_ids.add(tweet_id)
-                    all_tweets.append(tweet_dict)
-            soup = BeautifulSoup(html, "lxml")
-            more = soup.select_one(".show-more a")
-            if more and more.get("href"):
-                m = re.search(r"cursor=([^&]+)", more["href"])
-                cursor = m.group(1) if m else ""
-            else:
-                break
-            time.sleep(0.5)
+    with concurrency_limit():
+        with _build_client() as client:
+            while len(all_tweets) < limit:
+                path = f"/{username}"
+                if cursor:
+                    path += f"?cursor={cursor}"
+                html = fetch_page(client, path)
+                if not html:
+                    break
+                parsed = _parse_page(html)
+                if not parsed:
+                    break
+                # Cross-page dedup by tweet ID
+                for tweet_dict in parsed:
+                    tweet_id = tweet_dict.get("id", "")
+                    if tweet_id and tweet_id not in seen_ids:
+                        seen_ids.add(tweet_id)
+                        all_tweets.append(tweet_dict)
+                soup = BeautifulSoup(html, "lxml")
+                more = soup.select_one(".show-more a")
+                if more and more.get("href"):
+                    m = re.search(r"cursor=([^&]+)", more["href"])
+                    cursor = m.group(1) if m else ""
+                else:
+                    break
+                time.sleep(0.5)
 
     return [_dict_to_tweet(t) for t in all_tweets[:limit]]
 
@@ -873,31 +876,32 @@ def search(
     all_tweets = []
     seen_ids = set()  # Cross-page dedup
     cursor = ""
-    with _build_client() as client:
-        while len(all_tweets) < limit:
-            path = f"/search?f={feed_type}&q={encoded}"
-            if cursor:
-                path += f"&cursor={cursor}"
-            html = fetch_page(client, path)
-            if not html:
-                break
-            parsed = _parse_page(html)
-            if not parsed:
-                break
-            # Cross-page dedup by tweet ID
-            for tweet_dict in parsed:
-                tweet_id = tweet_dict.get("id", "")
-                if tweet_id and tweet_id not in seen_ids:
-                    seen_ids.add(tweet_id)
-                    all_tweets.append(tweet_dict)
-            soup = BeautifulSoup(html, "lxml")
-            more = soup.select_one(".show-more a")
-            if more and more.get("href"):
-                m = re.search(r"cursor=([^&]+)", more["href"])
-                cursor = m.group(1) if m else ""
-            else:
-                break
-            time.sleep(0.5)
+    with concurrency_limit():
+        with _build_client() as client:
+            while len(all_tweets) < limit:
+                path = f"/search?f={feed_type}&q={encoded}"
+                if cursor:
+                    path += f"&cursor={cursor}"
+                html = fetch_page(client, path)
+                if not html:
+                    break
+                parsed = _parse_page(html)
+                if not parsed:
+                    break
+                # Cross-page dedup by tweet ID
+                for tweet_dict in parsed:
+                    tweet_id = tweet_dict.get("id", "")
+                    if tweet_id and tweet_id not in seen_ids:
+                        seen_ids.add(tweet_id)
+                        all_tweets.append(tweet_dict)
+                soup = BeautifulSoup(html, "lxml")
+                more = soup.select_one(".show-more a")
+                if more and more.get("href"):
+                    m = re.search(r"cursor=([^&]+)", more["href"])
+                    cursor = m.group(1) if m else ""
+                else:
+                    break
+                time.sleep(0.5)
 
     tweets = [_dict_to_tweet(t) for t in all_tweets[:limit]]
 
@@ -947,30 +951,31 @@ def search_users(query: str, limit: int = DEFAULT_LIMIT) -> List[User]:
     encoded = quote_plus(query)
     all_users = []
     cursor = ""
-    with _build_client() as client:
-        while len(all_users) < limit:
-            path = f"/search?f=people&q={encoded}"
-            if cursor:
-                path += f"&cursor={cursor}"
-            html = fetch_page(client, path)
-            if not html:
-                break
+    with concurrency_limit():
+        with _build_client() as client:
+            while len(all_users) < limit:
+                path = f"/search?f=people&q={encoded}"
+                if cursor:
+                    path += f"&cursor={cursor}"
+                html = fetch_page(client, path)
+                if not html:
+                    break
 
-            soup = BeautifulSoup(html, "lxml")
-            # Parse user profile cards
-            for card in soup.select(".profile-card"):
-                user_data = _parse_profile_card(card)
-                if user_data:
-                    all_users.append(user_data)
+                soup = BeautifulSoup(html, "lxml")
+                # Parse user profile cards
+                for card in soup.select(".profile-card"):
+                    user_data = _parse_profile_card(card)
+                    if user_data:
+                        all_users.append(user_data)
 
-            # Check for more results
-            more = soup.select_one(".show-more a")
-            if more and more.get("href"):
-                m = re.search(r"cursor=([^&]+)", more["href"])
-                cursor = m.group(1) if m else ""
-            else:
-                break
-            time.sleep(0.5)
+                # Check for more results
+                more = soup.select_one(".show-more a")
+                if more and more.get("href"):
+                    m = re.search(r"cursor=([^&]+)", more["href"])
+                    cursor = m.group(1) if m else ""
+                else:
+                    break
+                time.sleep(0.5)
 
     return [_dict_to_user(u) for u in all_users[:limit]]
 
@@ -1028,10 +1033,11 @@ def get_tweet(url: str) -> Tweet:
         raise XpertError(f"Could not parse tweet URL: {url}")
 
     username, tweet_id = match.groups()
-    with _build_client() as client:
-        html = fetch_page(client, f"/{username}/status/{tweet_id}")
-        if not html:
-            raise XpertError(f"Could not fetch tweet from {url}")
+    with concurrency_limit():
+        with _build_client() as client:
+            html = fetch_page(client, f"/{username}/status/{tweet_id}")
+            if not html:
+                raise XpertError(f"Could not fetch tweet from {url}")
 
     parsed = _parse_page(html)
     if not parsed:
@@ -1048,10 +1054,11 @@ def get_thread(url: str) -> List[Tweet]:
         raise XpertError(f"Could not parse tweet URL: {url}")
 
     username, tweet_id = match.groups()
-    with _build_client() as client:
-        html = fetch_page(client, f"/{username}/status/{tweet_id}")
-        if not html:
-            raise XpertError(f"Could not fetch thread from {url}")
+    with concurrency_limit():
+        with _build_client() as client:
+            html = fetch_page(client, f"/{username}/status/{tweet_id}")
+            if not html:
+                raise XpertError(f"Could not fetch thread from {url}")
 
     parsed = _parse_page(html)
     if not parsed:

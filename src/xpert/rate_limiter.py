@@ -72,7 +72,10 @@ class RateLimitState:
 
         Uses sliding window: if we've made more than MAX_CONCURRENT_REQUESTS
         requests in the last 60 seconds, throttle.
+        When MAX_CONCURRENT_REQUESTS is None (unlimited), returns False.
         """
+        if MAX_CONCURRENT_REQUESTS is None:
+            return False  # Unlimited: never throttle based on slot count
         now = time.time()
         with self.lock:
             # Expire old entries first

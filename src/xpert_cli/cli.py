@@ -323,11 +323,23 @@ def output_result(data, fmt: str, output: Optional[str], full_data: bool = False
                 # Handle user profile dict (from {"profile": User, "tweets": [...]})
                 profile_dict = _user_to_dict(data["profile"], full_data)
                 users_to_format([profile_dict], fmt, str(safe_path), full_data)
+                # Also export tweets so nothing is silently dropped
+                tweets = data.get("tweets", [])
+                if tweets:
+                    base = Path(output)
+                    stem = base.stem
+                    ext = base.suffix
+                    tweets_path = _safe_output_path(str(base.with_name(f"{stem}_tweets{ext}")))
+                    tweets_to_format(tweets, fmt, str(tweets_path), full_data)
+                    click.echo(ok(f"Saved to {safe_path}"))
+                    click.echo(ok(f"Tweets saved to {tweets_path}"))
+                else:
+                    click.echo(ok(f"Saved to {safe_path}"))
             else:
                 # Single user object
                 user_dict = _user_to_dict(data, full_data)
                 users_to_format([user_dict], fmt, str(safe_path), full_data)
-            click.echo(ok(f"Saved to {safe_path}"))
+                click.echo(ok(f"Saved to {safe_path}"))
     except ValueError as e:
         raise click.ClickException(f"Failed to export data: {e}")
 

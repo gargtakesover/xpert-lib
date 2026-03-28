@@ -1,6 +1,8 @@
 """Configuration for xpert."""
 
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 # Package directory (engine/ is bundled alongside src/)
@@ -58,8 +60,36 @@ NITTER_INSTANCES = [
 # User agent
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-# Rate limiting
-MAX_CONCURRENT_REQUESTS = 5
+# Rate limiting & concurrency
+# XPERT_CONCURRENCY: max simultaneous HTTP requests to Nitter (empty/0 = unlimited)
+_MAX_CONCURRENT = int(os.environ.get("XPERT_CONCURRENCY", "0") or "0")
+if _MAX_CONCURRENT <= 0:
+    MAX_CONCURRENT_REQUESTS = None  # Unlimited
+    _CONCURRENCY_SLOTS = 999999     # Effectively unlimited semaphore
+else:
+    MAX_CONCURRENT_REQUESTS = _MAX_CONCURRENT
+    _CONCURRENCY_SLOTS = _MAX_CONCURRENT
+
+_concurrency_gate = threading.Semaphore(_CONCURRENCY_SLOTS)
+
+
+@contextmanager
+def concurrency_limit():
+    """Context manager: limits concurrent HTTP requests to Nitter.
+
+    When XPERT_CONCURRENCY is 0 or unset (default), this is a no-op (unlimited).
+    When set to a positive integer, only that many requests proceed simultaneously.
+    """
+    if MAX_CONCURRENT_REQUESTS is None:
+        yield  # No-op: unlimited
+    else:
+        _concurrency_gate.acquire()
+        try:
+            yield
+        finally:
+            _concurrency_gate.release()
+
+
 REQUEST_TIMEOUT = 20.0
 
 # Default tweet limit
