@@ -43,7 +43,7 @@ def download_file(url: str, output_dir: Path, filename: Optional[str] = None) ->
     return dest
 
 
-def download_tweet_media(tweet_or_dict, output_dir: str = ".", limit: int = None) -> List[Path]:
+def download_tweet_media(tweet_or_dict, output_dir: str = ".", limit: Optional[int] = None) -> List[Path]:
     """
     Download all media from a tweet.
 
