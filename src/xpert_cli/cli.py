@@ -46,7 +46,7 @@ try:
     from xpert import cookies as cookies_module
     from xpert.config import NITTER_INSTANCES, ENGINE_DIR, SESSIONS_FILE, PACKAGE_DIR, BUNDLED_ENGINE_DIR, MAX_QUERY_LENGTH, LOG_FILE
     from xpert.scraper import check_nitter_health
-    from xpert.exporters import tweets_to_format, tweets_to_csv, tweets_to_json
+    from xpert.exporters import tweets_to_format, tweets_to_csv, tweets_to_json, users_to_format, _clean_dict, _flatten_user
     MODULES_OK = True
 except ImportError as e:
     Xpert = Tweet = User = None
@@ -147,6 +147,11 @@ def ensure_nitter_running():
     if ok:
         return
 
+    auto_restart = os.environ.get("XPERT_AUTO_RESTART", "").lower() not in ("0", "false", "no")
+    if not auto_restart:
+        click.echo(warn(f"Nitter not running ({msg}). Set XPERT_AUTO_RESTART=1 to enable auto-restart."))
+        sys.exit(1)
+
     click.echo(warn(f"Nitter not running ({msg}), attempting auto-restart..."))
 
     # Try to restart Nitter via docker compose (using bundled engine/)
@@ -245,10 +250,14 @@ def handle_error(error: Exception, context: str = ""):
     elif isinstance(error, NotFoundError):
         click.echo(err(f"Not found: {error}"), err=True)
     elif isinstance(error, ConnectionError):
-        click.echo(err(f"Connection error: {error}"), err=True)
-        click.echo(warn("\nTroubleshooting:"), err=True)
-        click.echo("  xpert status       # Check connectivity", err=True)
-        click.echo("  xpert setup        # First-time setup", err=True)
+        click.echo(err("Nitter connection failed:"), err=True)
+        click.echo("  %s" % dim(str(error).strip()), err=True)
+        click.echo("")
+        click.echo(warn("Troubleshooting:"), err=True)
+        click.echo("  %s xpert doctor        # Run full health check" % info("→"), err=True)
+        click.echo("  %s xpert status        # Check connectivity" % info("→"), err=True)
+        click.echo("  %s xpert install       # Start/restart Nitter" % info("→"), err=True)
+        sys.exit(1)
     elif isinstance(error, XpertError):
         click.echo(err(f"Error: {error}"), err=True)
     else:
@@ -310,21 +319,22 @@ def output_result(data, fmt: str, output: Optional[str], full_data: bool = False
             safe_path = _safe_output_path(output)
             if isinstance(data, list):
                 tweets_to_format(data, fmt, str(safe_path), full_data)
+            elif isinstance(data, dict) and "profile" in data:
+                # Handle user profile dict (from {"profile": User, "tweets": [...]})
+                profile_dict = _user_to_dict(data["profile"], full_data)
+                users_to_format([profile_dict], fmt, str(safe_path), full_data)
             else:
-                # User profiles can't be exported as CSV/Excel — suggest JSON
-                raise click.BadParameter(
-                    f"--format {fmt} is not supported for user profiles. "
-                    "Use --format json to export profile data."
-                )
+                # Single user object
+                user_dict = _user_to_dict(data, full_data)
+                users_to_format([user_dict], fmt, str(safe_path), full_data)
             click.echo(ok(f"Saved to {safe_path}"))
     except ValueError as e:
         raise click.ClickException(f"Failed to export data: {e}")
 
 
-def _clean_dict(d: dict, full_data: bool) -> dict:
-    if full_data:
-        return d
-    return {k: v for k, v in d.items() if v not in (None, "", [], {})}
+def _user_to_dict(u: User, full_data: bool = False) -> dict:
+    """Alias for exporters._flatten_user to avoid duplication."""
+    return _flatten_user(u, full_data)
 
 
 def _tweet_to_dict(t: Tweet, full_data: bool = False) -> dict:
@@ -339,19 +349,6 @@ def _tweet_to_dict(t: Tweet, full_data: bool = False) -> dict:
         "is_edited": t.is_edited,
         "has_community_note": t.has_community_note,
         "community_note": t.community_note,
-    }
-    return _clean_dict(d, full_data)
-
-
-def _user_to_dict(u: User, full_data: bool = False) -> dict:
-    d = {
-        "username": u.username, "display_name": u.display_name, "bio": u.bio,
-        "followers": u.followers, "following": u.following, "tweets": u.tweets,
-        "url": u.url, "profile_picture": u.profile_picture, "joined": u.joined,
-        "verified": u.verified,
-        # Safely include extra dynamic fields like website/location if present
-        "location": getattr(u, "location", ""),
-        "website": getattr(u, "website", ""),
     }
     return _clean_dict(d, full_data)
 
@@ -1034,7 +1031,8 @@ def thread(url: str, format: str, output: Optional[str], delay: Optional[float],
 @main.command()
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed info")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-def status(verbose: bool, as_json: bool):
+@click.option("--selectors", is_flag=True, help="Run CSS selector health check against live Nitter")
+def status(verbose: bool, as_json: bool, selectors: bool):
     """Check xpert status, cookies, and Nitter connectivity."""
     if not MODULES_OK:
         if as_json:
@@ -1098,6 +1096,33 @@ def status(verbose: bool, as_json: bool):
                 click.echo(f"    cd {ENGINE_DIR} && docker compose up -d", err=True)
 
     click.echo("")
+
+    if selectors:
+        click.echo(hdr("Selector Health Check"), err=True)
+        click.echo("Fetching test page (@BillGates profile)...", err=True)
+        try:
+            from xpert.scraper import check_selector_health_public
+            health = check_selector_health_public(NITTER_INSTANCES[0])
+            if not health:
+                click.echo(err("Could not fetch test page"))
+            else:
+                click.echo(f"\n{'Selector':<30} {'Elements':>10}")
+                click.echo("-" * 42)
+                for name, count in sorted(health.items()):
+                    if count == -1:
+                        click.echo(f"  {err(name):<30} {'ERROR':>10}")
+                    elif count == 0:
+                        click.echo(f"  {warn(name):<30} {'0':>10}")
+                    else:
+                        click.echo(f"  {dim(name):<30} {count:>10}")
+                degraded = [n for n, c in health.items() if c == 0]
+                if degraded:
+                    click.echo(warn(f"\n⚠ {len(degraded)} selectors returned 0 elements."))
+                    click.echo(warn("Nitter HTML structure may have changed. Run 'xpert upgrade' to update."))
+        except Exception as e:
+            click.echo(err(f"Selector check failed: {e}"))
+        click.echo("")
+
     if ready:
         click.echo(ok("Xpert is ready! Run 'xpert search hello' to test."))
     elif cookies_ok:
@@ -1106,6 +1131,9 @@ def status(verbose: bool, as_json: bool):
         click.echo(warn("Xpert needs session tokens. Run 'xpert configure' to add them."))
     else:
         click.echo(warn("Xpert needs setup. Run 'xpert setup' for guidance."))
+
+    click.echo("")
+    click.echo(dim("Tip: Run 'xpert doctor' for a comprehensive diagnostic including CSS selector health."))
 
 
 # ---------------------------------------------------------------------------
@@ -1158,8 +1186,195 @@ def setup():
 
 
 # ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+@main.command(name="doctor")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed info")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def doctor(verbose: bool, as_json: bool):
+    """Run comprehensive health check including CSS selector diagnostics.
+
+    This is equivalent to 'xpert status --verbose --selectors' but
+    provides a more prominent summary of potential issues.
+    """
+    if not MODULES_OK:
+        if as_json:
+            click.echo(json.dumps({"ok": False, "error": MODULE_ERROR}))
+        else:
+            click.echo("%s Module error: %s" % (err("✗"), MODULE_ERROR))
+        sys.exit(1)
+
+    # Run status check
+    status_cookies = cookies_module.get_cookies_status()
+    nitter_statuses = []
+    primary_ok = False
+    for inst in NITTER_INSTANCES[:3]:
+        ok_nitter, msg = check_nitter_health(inst)
+        nitter_statuses.append({"url": inst, "ok": ok_nitter, "message": msg})
+        if inst == NITTER_INSTANCES[0]:
+            primary_ok = ok_nitter
+
+    cookies_ok = status_cookies["configured"]
+    ready = cookies_ok and primary_ok
+
+    if as_json:
+        output = {
+            "ok": ready,
+            "cookies_configured": cookies_ok,
+            "nitter_primary_ok": primary_ok,
+            "nitter_instances": nitter_statuses,
+        }
+        click.echo(json.dumps(output, indent=2))
+        return
+
+    click.echo(hdr("Xpert Doctor"), err=True)
+    click.echo("")
+
+    # Overall status
+    if ready:
+        click.echo("%s All systems operational" % ok("✓"))
+    else:
+        click.echo("%s Issues detected" % warn("⚠"))
+    click.echo("")
+
+    # Cookies
+    click.echo(info("Authentication:"), err=True)
+    if status_cookies["configured"]:
+        click.echo("  %s Cookies configured" % ok("●"))
+    else:
+        click.echo("  %s Cookies not configured - run 'xpert configure'" % warn("○"))
+
+    # Nitter
+    click.echo(info("Nitter Connectivity:"), err=True)
+    for inst_data in nitter_statuses:
+        if inst_data["ok"]:
+            click.echo("  %s %s: %s" % (ok("●"), inst_data["url"], inst_data["message"]))
+        else:
+            click.echo("  %s %s: %s" % (err("✗"), inst_data["url"], inst_data["message"]))
+            if "disconnected" in inst_data["message"].lower() or "refused" in inst_data["message"].lower():
+                click.echo("    %s Nitter crashing on startup" % warn("↳"))
+
+    # CSS Selector health
+    click.echo("")
+    click.echo(info("CSS Selector Health:"), err=True)
+    try:
+        from xpert.scraper import check_selector_health_public
+        click.echo("  Fetching test page...", err=True)
+        health = check_selector_health_public(NITTER_INSTANCES[0])
+        if not health:
+            click.echo("  %s Could not fetch test page" % err("✗"))
+        else:
+            degraded = [n for n, c in health.items() if c == 0]
+            if not degraded:
+                click.echo("  %s All selectors working" % ok("●"))
+            else:
+                click.echo("  %s %d selector(s) returning 0 elements" % (warn("⚠"), len(degraded)))
+                if verbose:
+                    for name in degraded[:10]:
+                        click.echo("    - %s" % warn(name))
+                    if len(degraded) > 10:
+                        click.echo("    %s ... and %d more" % (dim("..."), len(degraded) - 10))
+    except Exception as e:
+        click.echo("  %s Selector check unavailable: %s" % (dim("?"), str(e)[:60]))
+
+    click.echo("")
+    if ready:
+        click.echo(ok("Xpert is ready! Run 'xpert search hello' to test."))
+    else:
+        click.echo(warn("Run 'xpert status' for full troubleshooting details."))
+
+
+# ---------------------------------------------------------------------------
 # upgrade
 # ---------------------------------------------------------------------------
+
+@main.command()
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompts")
+@click.confirmation_option(prompt="This will stop all containers, remove Docker images, delete ~/.xpert, and uninstall the xpert package. Continue?")
+def uninstall(force: bool):
+    """Completely remove xpert: stop Nitter, remove Docker images, config, and package."""
+    if not MODULES_OK:
+        click.echo(err(f"Module error: {MODULE_ERROR}"), err=True)
+        sys.exit(1)
+
+    click.echo(hdr("Xpert Uninstall"), err=True)
+
+    # Step 1: Stop Nitter containers
+    click.echo(info("Stopping Nitter containers..."), err=True)
+    engine_dir = ENGINE_DIR if isinstance(ENGINE_DIR, Path) else Path(ENGINE_DIR)
+    if engine_dir.exists():
+        try:
+            subprocess.run(
+                ["docker", "compose", "down", "-v"],
+                cwd=str(engine_dir),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            click.echo(ok("Containers stopped."))
+        except subprocess.TimeoutExpired:
+            click.echo(warn("Timeout stopping containers."))
+        except Exception as e:
+            click.echo(warn(f"Could not stop containers: {e}"))
+    else:
+        click.echo(dim("No engine directory found, skipping container stop."))
+
+    # Step 2: Remove Nitter Docker images
+    click.echo(info("Removing Nitter Docker image (zedeus/nitter)..."), err=True)
+    try:
+        img_result = subprocess.run(
+            ["docker", "images", "-q", "zedeus/nitter"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        img_ids = img_result.stdout.strip().splitlines()
+        if img_ids and img_ids[0]:
+            subprocess.run(
+                ["docker", "rmi", "-f"] + img_ids,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            click.echo(ok("Nitter image removed."))
+        else:
+            click.echo(dim("No Nitter image found."))
+    except Exception as e:
+        click.echo(warn(f"Could not remove Nitter image: {e}"))
+
+    # Step 3: Remove config directory
+    click.echo(info("Removing ~/.xpert config directory..."), err=True)
+    config_dir = Path("~/.xpert").expanduser()
+    if config_dir.exists():
+        import shutil
+        try:
+            shutil.rmtree(config_dir)
+            click.echo(ok(f"Removed {config_dir}"))
+        except Exception as e:
+            click.echo(warn(f"Could not remove config dir: {e}"))
+    else:
+        click.echo(dim("No config directory found."))
+
+    # Step 4: Uninstall xpert package
+    click.echo(info("Uninstalling xpert Python package..."), err=True)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "xpert", "-y"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            click.echo(ok("xpert package uninstalled."))
+        else:
+            click.echo(warn(f"pip uninstall returned: {result.stderr}"))
+    except Exception as e:
+        click.echo(warn(f"Could not uninstall package: {e}"))
+
+    click.echo(f"\n{ok('Uninstall complete!')}")
+    click.echo("To start fresh: pip install xpert && xpert install")
+
 
 @main.command()
 def upgrade():
@@ -1304,6 +1519,72 @@ def logs(container: str, lines: int, follow: bool):
             click.echo(err("Logs command timed out."))
         except Exception as e:
             click.echo(err(f"Error fetching logs: {e}"))
+
+
+# ---------------------------------------------------------------------------
+# Media Download
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("source", required=False)
+@click.option("--tweet-url", help="Tweet URL to download media from")
+@click.option("--user", help="Username to download profile media")
+@click.option("--output", "-o", default=".", help="Output directory (default: current directory)")
+@click.option("--limit", "-n", type=int, default=None, help="Max images to download per tweet")
+@click.option("--include-banner", is_flag=True, default=True, help="Include banner for profile downloads")
+def download(source: str, tweet_url: Optional[str], user: Optional[str], output: str, limit: Optional[int], include_banner: bool):
+    """Download media assets from tweets or user profiles.
+
+    Examples:
+        xpert download --tweet-url "https://x.com/user/status/123"
+        xpert download --user elonmusk --output ./media
+        xpert download https://x.com/user/status/123
+    """
+    if not MODULES_OK:
+        click.echo(err("Module error: %s" % MODULE_ERROR), err=True)
+        sys.exit(1)
+
+    from xpert.media import download_tweet_media, download_profile_media
+
+    # Resolve source
+    url_to_fetch = None
+    if tweet_url:
+        url_to_fetch = tweet_url
+    elif source and ("/status/" in source or "x.com" in source or "twitter.com" in source or "nitter" in source):
+        url_to_fetch = source
+
+    downloaded_paths = []
+
+    if url_to_fetch:
+        ensure_nitter_running()
+        click.echo(info("Fetching tweet..."), err=True)
+        try:
+            tweet = get_tweet(url_to_fetch)
+            click.echo("Downloading media from @%s..." % tweet.author, err=True)
+            paths = download_tweet_media(tweet, output_dir=output, limit=limit)
+            downloaded_paths.extend(paths)
+        except Exception as e:
+            handle_error(e, "download")
+    elif user:
+        ensure_nitter_running()
+        user = user.lstrip("@")
+        click.echo(info("Fetching profile for @%s..." % user), err=True)
+        try:
+            paths = download_profile_media(user, output_dir=output, include_banner=include_banner)
+            downloaded_paths.extend(paths)
+        except Exception as e:
+            handle_error(e, "download")
+    else:
+        click.echo(err("Provide either --tweet-url or --user"), err=True)
+        click.echo(download.get_help(ctx=None))
+        sys.exit(1)
+
+    if downloaded_paths:
+        click.echo(ok("\nDownloaded %d file(s) to %s:" % (len(downloaded_paths), Path(output).resolve())))
+        for p in downloaded_paths:
+            click.echo("  %s" % dim(str(p)))
+    else:
+        click.echo(warn("No media found to download."))
 
 
 # ---------------------------------------------------------------------------

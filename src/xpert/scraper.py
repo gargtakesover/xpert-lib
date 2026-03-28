@@ -7,6 +7,7 @@ Supports: user profiles, timelines, search, threads, and exports.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -19,6 +20,10 @@ from bs4 import BeautifulSoup
 
 from xpert.config import NITTER_INSTANCES, UA, REQUEST_TIMEOUT, DEFAULT_LIMIT
 from xpert.circuit_breaker import nitter_circuit
+from xpert.selectors import check_selector_health, get_degraded_selectors
+
+import logging
+_logger = logging.getLogger(__name__)
 
 try:
     from importlib.metadata import version as _get_version
@@ -84,13 +89,6 @@ class User:
     location: str = ""
     website: str = ""
 
-    @property
-    def email(self) -> str:
-        """Extract an email address from the user's bio using regex."""
-        if not self.bio: return ""
-        import re
-        match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', self.bio)
-        return match.group(0) if match else ""
 
 class XpertError(Exception):
     """Base exception for Xpert errors."""
@@ -141,6 +139,21 @@ def check_nitter_health(base_url: str = None) -> tuple[bool, str]:
         return False, f"Request failed: {e}"
     except httpx.HTTPError as e:
         return False, f"HTTP error: {e}"
+
+
+def check_selector_health_public(base_url: str = None) -> Dict[str, int]:
+    """
+    Fetch a test page and report selector health.
+    Useful for maintenance and debugging Nitter HTML changes.
+    """
+    _raise_nitter_unreachable(base_url)
+    base_url = base_url or NITTER_INSTANCES[0]
+    # Use a popular account for testing
+    with _build_client() as client:
+        html = fetch_page(client, "/BillGates")
+    if not html:
+        return {}
+    return check_selector_health(html)
 
 
 def _raise_nitter_unreachable(base_url: str = None):
@@ -259,13 +272,23 @@ def fetch_page(client: httpx.Client, path: str, retry_count: int = 3) -> Optiona
                 if any(x in r.text for x in ["tweet-content", "timeline-item", "profile-result"]):
                     nitter_circuit.record_success()
                     record_success()
-                    
+
                     from xpert.config import CURRENT_DELAY
                     import random
                     if CURRENT_DELAY > 0:
                         jitter = random.uniform(0, 0.5)
                         time.sleep(CURRENT_DELAY + jitter)
-                        
+
+                    # Check for selector degradation (only when explicitly enabled — expensive)
+                    if os.environ.get("XPERT_SELECTOR_DEBUG", "").lower() in ("1", "true", "yes"):
+                        degraded = get_degraded_selectors(check_selector_health(r.text))
+                        if degraded:
+                            _logger.warning(
+                                "Selector degradation detected on %s: %s returned 0 elements. "
+                                "Nitter HTML may have changed.",
+                                instance, degraded[:5]
+                            )
+
                     return r.text
                 break
             except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadTimeout) as e:

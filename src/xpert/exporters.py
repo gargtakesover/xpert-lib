@@ -49,24 +49,6 @@ def _flatten_tweet(tweet, full_data: bool = False) -> dict:
     return _clean_dict(d, full_data)
 
 
-def _flatten_user(user, full_data: bool = False) -> dict:
-    """Flatten a User object."""
-    d = {
-        "username": user.username,
-        "display_name": user.display_name,
-        "bio": user.bio,
-        "email": getattr(user, "email", ""),
-        "followers": user.followers,
-        "following": user.following,
-        "tweets": user.tweets,
-        "url": user.url,
-        "profile_picture": user.profile_picture,
-        "joined": user.joined,
-        "verified": user.verified,
-    }
-    return _clean_dict(d, full_data)
-
-
 def tweets_to_csv(tweets: List, output: Optional[str] = None, full_data: bool = False) -> str:
     """Export tweets to CSV."""
     rows = [_flatten_tweet(t, full_data) for t in tweets]
@@ -152,5 +134,97 @@ def tweets_to_format(tweets: List, fmt: str, output: str, full_data: bool = Fals
         return tweets_to_markdown(tweets, output, full_data)
     elif fmt == "json":
         return tweets_to_json(tweets, output, full_data=full_data)
+    else:
+        raise ValueError(f"Unknown format: {fmt}. Use: csv, excel, json, markdown")
+
+
+USER_COLUMNS = ["username", "display_name", "bio", "followers", "following", "tweets", "url", "profile_picture", "joined", "verified", "location", "website"]
+
+def _flatten_user(user, full_data: bool = False) -> dict:
+    """Flatten a User object for export."""
+    d = {
+        "username": user.username,
+        "display_name": user.display_name,
+        "bio": user.bio,
+        "followers": user.followers,
+        "following": user.following,
+        "tweets": user.tweets,
+        "url": user.url,
+        "profile_picture": user.profile_picture,
+        "joined": user.joined,
+        "verified": user.verified,
+        "location": getattr(user, "location", ""),
+        "website": getattr(user, "website", ""),
+    }
+    return _clean_dict(d, full_data)
+
+
+def users_to_csv(users: List, output: Optional[str] = None, full_data: bool = False) -> str:
+    """Export users to CSV."""
+    rows = [_flatten_user(u, full_data) for u in users]
+    if not rows:
+        rows = [{}]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=USER_COLUMNS)
+    writer.writeheader()
+    writer.writerows(rows)
+    content = buf.getvalue()
+    if output:
+        with open(output, "w", newline="", encoding="utf-8") as f:
+            f.write(content)
+        return output
+    return content
+
+
+def users_to_excel(users: List, output: Optional[str] = None, full_data: bool = False) -> Union[bytes, str]:
+    """Export users to Excel (.xlsx)."""
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("pandas and openpyxl required for Excel export. Install with: pip install xpert[excel]")
+
+    rows = [_flatten_user(u, full_data) for u in users]
+    if not rows:
+        rows = [dict.fromkeys(USER_COLUMNS, "")]
+    df = pd.DataFrame(rows, columns=USER_COLUMNS)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Profiles")
+    data = buf.getvalue()
+    if output:
+        with open(output, "wb") as f:
+            f.write(data)
+        return output
+    return data
+
+
+def users_to_markdown(users: List, output: Optional[str] = None, full_data: bool = False) -> str:
+    """Export users to Markdown."""
+    lines = ["# Xpert User Profiles\n"]
+    lines.append("| Username | Display Name | Followers | Following | Verified |")
+    lines.append("|----------|--------------|-----------|----------|---------|")
+    for u in users:
+        d = _flatten_user(u, full_data)
+        verified = "Yes" if d.get("verified") else ""
+        lines.append(f"| @{d.get('username', '')} | {d.get('display_name', '')} | {d.get('followers', 0):,} | {d.get('following', 0):,} | {verified} |")
+    content = "\n".join(lines)
+    if output:
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(content)
+        return output
+    return content
+
+
+def users_to_format(users: List, fmt: str, output: str, full_data: bool = False) -> str:
+    """Export users in specified format. Writes to output file."""
+    fmt = fmt.lower()
+    if fmt == "csv":
+        return users_to_csv(users, output, full_data)
+    elif fmt == "excel":
+        return users_to_excel(users, output, full_data)
+    elif fmt == "markdown":
+        return users_to_markdown(users, output, full_data)
+    elif fmt == "json":
+        return json.dumps([_flatten_user(u, full_data) for u in users], indent=2, ensure_ascii=False)
     else:
         raise ValueError(f"Unknown format: {fmt}. Use: csv, excel, json, markdown")
