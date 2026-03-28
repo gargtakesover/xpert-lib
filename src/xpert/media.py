@@ -71,13 +71,22 @@ def download_tweet_media(tweet_or_dict, output_dir: str = ".", limit: int = None
     if limit:
         images = images[:limit]
 
+    def _get_ext(url: str, default: str = "jpg") -> str:
+        parsed = urlparse(url)
+        path = parsed.path.split("?")[0]
+        ext = os.path.splitext(path)[1].lstrip(".")
+        # Handle Nitter/Twitter specific formats like :orig or .jpg:large
+        if ":" in ext:
+            ext = ext.split(":")[0]
+        return ext[:5] if ext else default
+
     # Download images
     for i, img in enumerate(images):
         url = img.get("url") if isinstance(img, dict) else img
         if not url:
             continue
         try:
-            ext = url.split("?")[0].split(".")[-1][:5]
+            ext = _get_ext(url, "jpg")
             filename = f"image_{i+1}.{ext}"
             dest = download_file(url, output_path, filename)
             downloaded.append(dest)
@@ -90,7 +99,7 @@ def download_tweet_media(tweet_or_dict, output_dir: str = ".", limit: int = None
         if not thumb:
             continue
         try:
-            ext = thumb.split("?")[0].split(".")[-1][:5]
+            ext = _get_ext(thumb, "jpg")
             filename = f"video_{i+1}_thumb.{ext}"
             dest = download_file(thumb, output_path, filename)
             downloaded.append(dest)
@@ -102,7 +111,7 @@ def download_tweet_media(tweet_or_dict, output_dir: str = ".", limit: int = None
         if not gif_url:
             continue
         try:
-            ext = gif_url.split("?")[0].split(".")[-1][:5]
+            ext = _get_ext(gif_url, "mp4")
             filename = f"gif_{i+1}.{ext}"
             dest = download_file(gif_url, output_path, filename)
             downloaded.append(dest)
@@ -132,9 +141,17 @@ def download_profile_media(username: str, output_dir: str = ".", include_banner:
 
     user = get_user(username)
 
+    def _get_ext(url: str, default: str = "jpg") -> str:
+        parsed = urlparse(url)
+        path = parsed.path.split("?")[0]
+        ext = os.path.splitext(path)[1].lstrip(".")
+        if ":" in ext:
+            ext = ext.split(":")[0]
+        return ext[:5] if ext else default
+
     if user.profile_picture:
         try:
-            ext = user.profile_picture.split("?")[0].split(".")[-1][:5]
+            ext = _get_ext(user.profile_picture, "jpg")
             filename = f"profile_pic.{ext}"
             dest = download_file(user.profile_picture, output_path, filename)
             downloaded.append(dest)
@@ -143,7 +160,7 @@ def download_profile_media(username: str, output_dir: str = ".", include_banner:
 
     if include_banner and getattr(user, "banner", None):
         try:
-            ext = user.banner.split("?")[0].split(".")[-1][:5]
+            ext = _get_ext(user.banner, "jpg")
             filename = f"banner.{ext}"
             dest = download_file(user.banner, output_path, filename)
             downloaded.append(dest)
